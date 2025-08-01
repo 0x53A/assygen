@@ -4,7 +4,7 @@ from modern_gerber import GerberMachine, ResetExtents, gerber_extents
 from reportlab.pdfgen import canvas
 from reportlab.lib import colors
 from reportlab.lib.units import mm
-from reportlab.lib.pagesizes import letter
+from reportlab.lib.pagesizes import letter, landscape
 import csv
 import sys
 import os
@@ -14,6 +14,27 @@ gerberPageSize = letter
 gerberMargin = 0.75 * 25.4 * mm  # 0.75 inch margin
 gerberScale = (1.0, 1.0)
 gerberOffset = (0.0, 0.0)
+
+def determine_optimal_orientation(gerber_extents):
+    """Determine optimal PDF orientation based on PCB dimensions"""
+    if not gerber_extents or gerber_extents[0] == float('inf'):
+        # If no valid extents, default to portrait
+        print("No valid PCB extents found - using portrait orientation")
+        return letter
+    
+    # Calculate PCB dimensions
+    pcb_width = gerber_extents[2] - gerber_extents[0]  # max_x - min_x
+    pcb_height = gerber_extents[3] - gerber_extents[1]  # max_y - min_y
+    
+    print(f"PCB dimensions: {pcb_width:.2f} x {pcb_height:.2f} units")
+    
+    # If PCB is wider than tall, use landscape orientation
+    if pcb_width > pcb_height:
+        print("PCB is wider than tall - using landscape orientation")
+        return landscape(letter)
+    else:
+        print("PCB is taller than wide - using portrait orientation")
+        return letter
 
 class PPComponent:
     def __init__(self, xc, yc, w, h, name, desc, ref):
@@ -55,27 +76,89 @@ class PickAndPlaceFile:
     def gen_table(self, layer, index, n_comps, canv):
         parts = self.split_parts(layer, index, n_comps)
 
-        yt = 260 * mm
-        canv.setFont("Helvetica", 10)
+        # Get current page size to position table correctly
+        page_width, page_height = gerberPageSize
+        
+        # Table dimensions and positioning
+        table_x = 15 * mm  # Left margin
+        table_y = page_height - 35 * mm  # Top position
+        
+        # Column definitions: x_position, width, header_text
+        columns = [
+            (0 * mm, 15 * mm, "Color"),
+            (15 * mm, 40 * mm, "Lib.Reference"), 
+            (55 * mm, 40 * mm, "Comment"),
+            (95 * mm, 80 * mm, "Designators")
+        ]
+        
+        table_width = sum(col[1] for col in columns)  # Total width
+        row_height = 6 * mm
+        header_height = 8 * mm
+        
+        # Calculate total table height
+        num_data_rows = len(parts)
+        total_height = header_height + (num_data_rows * row_height)
+        
+        # Draw heavy outer border
+        canv.setLineWidth(2.0)
         canv.setStrokeGray(0)
+        canv.rect(table_x, table_y - total_height, table_width, total_height, 0, 0)
+        
+        # Draw header row background (light gray)
+        canv.setFillGray(0.9)
+        canv.rect(table_x, table_y - header_height, table_width, header_height, 0, 1)
+        
+        # Draw heavy border between header and content
+        canv.setLineWidth(1.5)
+        canv.line(table_x, table_y - header_height, table_x + table_width, table_y - header_height)
+        
+        # Draw thin vertical column separators
+        canv.setLineWidth(0.5)
+        x_pos = table_x
+        for i, (col_offset, col_width, _) in enumerate(columns[:-1]):  # Skip last column
+            x_pos += col_width
+            canv.line(x_pos, table_y, x_pos, table_y - total_height)
+        
+        # Draw thin horizontal row separators
+        for i in range(1, num_data_rows):
+            y_pos = table_y - header_height - (i * row_height)
+            canv.line(table_x, y_pos, table_x + table_width, y_pos)
+        
+        # Draw header text
+        canv.setFont("Helvetica-Bold", 10)
         canv.setFillGray(0)
-        canv.drawString(20 * mm, yt, "Color")
-        canv.drawString(40 * mm, yt, "Lib.Reference")
-        canv.drawString(80 * mm, yt, "Comment")
-        canv.drawString(120 * mm, yt, "Designators")
+        text_y = table_y - (header_height * 0.7)  # Center text vertically
+        
+        for col_offset, col_width, header_text in columns:
+            canv.drawString(table_x + col_offset + 2 * mm, text_y, header_text)
+        
+        # Draw data rows
+        canv.setFont("Helvetica", 9)
         n = 0
-        for group in parts:
-            dsgn = ""
-            yt = yt - 6 * mm
+        for i, group in enumerate(parts):
+            row_y = table_y - header_height - (i * row_height)
+            text_y = row_y - (row_height * 0.7)  # Center text vertically
+            
+            # Draw color square in first column
+            color_x = table_x + columns[0][0] + 2 * mm
+            color_y = row_y - (row_height * 0.8)
+            color_size = 4 * mm
+            
             canv.setFillColor(self.col_map[n])
-            canv.rect(20 * mm, yt, 10 * mm, 3 * mm, 1, 1)
+            canv.setLineWidth(0.5)
+            canv.rect(color_x, color_y, color_size, color_size, 1, 1)
+            
+            # Reset to black for text
             canv.setFillGray(0)
             n = n + 1
-            for part in group:
-                dsgn = dsgn + " " + part.name
-            canv.drawString(120 * mm, yt, dsgn)
-            canv.drawString(40 * mm, yt, group[0].ref[0:20])
-            canv.drawString(80 * mm, yt, group[0].desc[0:20])
+            
+            # Build designator string
+            dsgn = " ".join(part.name for part in group)
+            
+            # Draw text in each column (skip color column)
+            canv.drawString(table_x + columns[1][0] + 2 * mm, text_y, group[0].ref[0:18])
+            canv.drawString(table_x + columns[2][0] + 2 * mm, text_y, group[0].desc[0:18])
+            canv.drawString(table_x + columns[3][0] + 2 * mm, text_y, dsgn[0:35])
 
 class PickAndPlaceFileKicad(PickAndPlaceFile):
     def __init__(self, fname):
@@ -251,6 +334,60 @@ def find_gerber_files(base_name, layer):
     
     return copper_file, overlay_file
 
+def get_pcb_extents(base_name):
+    """Get PCB extents from Gerber files without rendering"""
+    # Try both Top and Bottom layers to get overall PCB dimensions
+    layers_to_check = ["Top", "Bottom"]
+    all_extents = []
+    
+    for layer in layers_to_check:
+        f_copper, f_overlay = find_gerber_files(base_name, layer)
+        
+        if f_copper or f_overlay:
+            # Create a dummy canvas just to calculate extents
+            from reportlab.pdfgen import canvas as temp_canvas
+            import tempfile
+            
+            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_file:
+                temp_name = tmp_file.name
+            
+            try:
+                ctmp = temp_canvas.Canvas(temp_name)
+                gm = GerberMachine("", ctmp)
+                gm.Initialize()
+                ResetExtents()
+                
+                # Process files to get extents
+                if f_copper:
+                    gm.setColors(colors.Color(0.85, 0.85, 0.85), colors.Color(0, 0, 0))
+                    extents = gm.ProcessFile(f_copper)
+                    if extents:
+                        all_extents.append(extents)
+                
+                if f_overlay:
+                    gm.setColors(colors.Color(0.5, 0.5, 0.5), colors.Color(0, 0, 0))
+                    extents = gm.ProcessFile(f_overlay)
+                    if extents:
+                        all_extents.append(extents)
+                
+                ctmp.save()
+            finally:
+                # Clean up temp file
+                try:
+                    os.unlink(temp_name)
+                except:
+                    pass
+    
+    # Combine all extents to get overall PCB bounds
+    if all_extents:
+        min_x = min(ext[0] for ext in all_extents if ext[0] != float('inf'))
+        min_y = min(ext[1] for ext in all_extents if ext[1] != float('inf'))
+        max_x = max(ext[2] for ext in all_extents if ext[2] != float('-inf'))
+        max_y = max(ext[3] for ext in all_extents if ext[3] != float('-inf'))
+        return (min_x, min_y, max_x, max_y)
+    
+    return None
+
 def renderGerber(base_name, layer, canv):
     """Render Gerber files as background layers"""
     global gerber_extents
@@ -300,13 +437,29 @@ def producePrintoutsForLayer(base_name, layer, canv, pf=None):
         ext = renderGerber(base_name, layer, ctmp)
         ctmp.save()
         
-        # Calculate scale and offset to fit page
+        # Calculate scale and offset to fit page, reserving space for table
         if ext and ext[0] != float('inf'):
-            scale1 = (gerberPageSize[0] - 2 * gerberMargin) / (ext[2] - ext[0])
-            scale2 = (gerberPageSize[1] - 2 * gerberMargin) / (ext[3] - ext[1])
+            # Reserve space for the table (estimate table height based on number of components)
+            # Assume max 6 components per page + header = 7 rows * 6mm + 8mm header = 50mm
+            table_space = 60 * mm  # Reserve 60mm for table
+            
+            available_width = gerberPageSize[0] - 2 * gerberMargin
+            available_height = gerberPageSize[1] - 2 * gerberMargin - table_space
+            
+            scale1 = available_width / (ext[2] - ext[0])
+            scale2 = available_height / (ext[3] - ext[1])
             scale = min(scale1, scale2)
             gerberScale = (scale, scale)
-            gerberOffset = (-ext[0] * scale + gerberMargin, -ext[1] * scale + gerberMargin)
+            
+            # Center the PCB in the available space (below the table)
+            pcb_width = (ext[2] - ext[0]) * scale
+            pcb_height = (ext[3] - ext[1]) * scale
+            
+            # Position PCB centered horizontally, and in the bottom portion (below table)
+            offset_x = (gerberPageSize[0] - pcb_width) / 2 - ext[0] * scale
+            offset_y = (available_height - pcb_height) / 2 + gerberMargin - ext[1] * scale
+            
+            gerberOffset = (offset_x, offset_y)
             
             print(f"Gerber extents: ({ext[0]:.2f}, {ext[1]:.2f}) to ({ext[2]:.2f}, {ext[3]:.2f})")
             print(f"Scale: {scale:.3f}, Offset: ({gerberOffset[0]/mm:.2f}, {gerberOffset[1]/mm:.2f}) mm")
@@ -402,6 +555,15 @@ def main():
         else:
             print("Error: No CSV file found, but separate .pos files were not detected")
             sys.exit(1)
+    
+    # Determine optimal page orientation based on PCB dimensions
+    print("\nAnalyzing PCB dimensions for optimal orientation...")
+    pcb_extents = get_pcb_extents(base_name)
+    optimal_pagesize = determine_optimal_orientation(pcb_extents)
+    
+    # Update global gerberPageSize for consistent use throughout
+    global gerberPageSize
+    gerberPageSize = optimal_pagesize
     
     # Create PDF with full features
     canv = canvas.Canvas(base_name + "_assy.pdf", pagesize=gerberPageSize)
