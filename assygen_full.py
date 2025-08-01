@@ -7,7 +7,6 @@ from reportlab.lib.units import mm
 from reportlab.lib.pagesizes import letter
 import csv
 import sys
-import os
 
 # Global variables for gerber rendering
 gerberPageSize = letter
@@ -126,140 +125,16 @@ class PickAndPlaceFileKicad(PickAndPlaceFile):
                     self.layers[layer][ref] = []
                 self.layers[layer][ref].append(PPComponent(cx, cy, w, h, row[i_dsg], row[i_desc], ref))
 
-class PickAndPlaceFileSeparate(PickAndPlaceFile):
-    """Handle separate .pos files for top and bottom layers"""
-    def __init__(self, base_name):
-        import os
-        
-        self.col_map = [colors.Color(1,0,0), 
-                       colors.Color(1,1,0), 
-                       colors.Color(0,1,0), 
-                       colors.Color(0,1,1), 
-                       colors.Color(1,0,1), 
-                       colors.Color(0,0,1)]
-
-        self.layers = {}
-        self.layers["Top"] = {}        
-        self.layers["Bottom"] = {}
-        
-        # Load top layer file
-        top_file = base_name + "-top.pos"
-        if os.path.exists(top_file):
-            print(f"Loading top layer file: {top_file}")
-            self._load_pos_file(top_file, "Top")
-        
-        # Load bottom layer file  
-        bottom_file = base_name + "-bottom.pos"
-        if os.path.exists(bottom_file):
-            print(f"Loading bottom layer file: {bottom_file}")
-            self._load_pos_file(bottom_file, "Bottom")
-    
-    def _load_pos_file(self, filename, layer):
-        """Load a single .pos file"""
-        with open(filename, 'r') as f:
-            lines = f.readlines()
-        
-        # Skip header lines (KiCad .pos files start with comments)
-        data_lines = []
-        for line in lines:
-            line = line.strip()
-            if line and not line.startswith('#') and not line.startswith('Ref'):
-                data_lines.append(line)
-                continue
-            # Check if this is the header line
-            if line.startswith('Ref') or 'Ref' in line:
-                header_line = line
-                continue
-        
-        # If we didn't find data lines, try a different approach
-        if not data_lines:
-            # Maybe it's space-separated without quotes
-            for line in lines:
-                line = line.strip()
-                if line and not line.startswith('#'):
-                    parts = line.split()
-                    if len(parts) >= 6 and parts[0] != 'Ref':  # Skip header
-                        data_lines.append(line)
-        
-        print(f"Found {len(data_lines)} components in {layer} layer")
-        
-        for line in data_lines:
-            try:
-                # Handle both CSV and space-separated formats
-                if ',' in line:
-                    # CSV format - split by comma and strip quotes
-                    parts = [p.strip().strip('"') for p in line.split(',')]
-                else:
-                    # Space-separated format
-                    parts = line.split()
-                
-                if len(parts) >= 6:
-                    ref = parts[0]       # Reference (C1, R2, etc.)
-                    val = parts[1]       # Value (100nF, 10K, etc.)  
-                    package = parts[2]   # Package/Footprint
-                    pos_x = float(parts[3])  # X position
-                    pos_y = float(parts[4])  # Y position
-                    rotation = float(parts[5])  # Rotation
-                    
-                    cx = pos_x * mm
-                    cy = pos_y * mm
-                    w = 1 * mm
-                    h = 1 * mm
-                    
-                    if val not in self.layers[layer]:
-                        self.layers[layer][val] = []
-                    self.layers[layer][val].append(PPComponent(cx, cy, w, h, ref, val, val))
-                    
-            except (ValueError, IndexError) as e:
-                print(f"Warning: Could not parse line in {filename}: {line}")
-                print(f"Error: {e}")
-                continue
-
-def find_gerber_files(base_name, layer):
-    """Find Gerber files using either old or new KiCad naming conventions"""
-    import os
-    
-    if layer == "Bottom":
-        # Try old convention first
-        old_copper = base_name + ".GBL"
-        old_overlay = base_name + ".GBO"
-        # Try new convention
-        new_copper = base_name + "-B_Cu.gbr"
-        new_overlay = base_name + "-B_Silkscreen.gbr"
-    else:
-        # Try old convention first
-        old_copper = base_name + ".GTL"
-        old_overlay = base_name + ".GTO"
-        # Try new convention
-        new_copper = base_name + "-F_Cu.gbr"
-        new_overlay = base_name + "-F_Silkscreen.gbr"
-    
-    # Check which files exist
-    if os.path.exists(old_copper):
-        copper_file = old_copper
-    elif os.path.exists(new_copper):
-        copper_file = new_copper
-    else:
-        copper_file = None
-    
-    if os.path.exists(old_overlay):
-        overlay_file = old_overlay
-    elif os.path.exists(new_overlay):
-        overlay_file = new_overlay
-    else:
-        overlay_file = None
-    
-    return copper_file, overlay_file
-
 def renderGerber(base_name, layer, canv):
     """Render Gerber files as background layers"""
     global gerber_extents
     
-    f_copper, f_overlay = find_gerber_files(base_name, layer)
-    
-    if not f_copper and not f_overlay:
-        print(f"Warning: No Gerber files found for {layer} layer")
-        return (0, 0, 100, 100)  # Return dummy extents
+    if layer == "Bottom":
+        f_copper = base_name + ".GBL"
+        f_overlay = base_name + ".GBO"
+    else:
+        f_copper = base_name + ".GTL"
+        f_overlay = base_name + ".GTO"
 
     canv.setLineWidth(0.0)
     gm = GerberMachine("", canv)
@@ -267,21 +142,16 @@ def renderGerber(base_name, layer, canv):
     ResetExtents()
     
     # Render copper layer (light gray)
-    if f_copper:
-        gm.setColors(colors.Color(0.85, 0.85, 0.85), colors.Color(0, 0, 0))
-        gm.ProcessFile(f_copper)
+    gm.setColors(colors.Color(0.85, 0.85, 0.85), colors.Color(0, 0, 0))
+    gm.ProcessFile(f_copper)
     
     # Render silkscreen overlay (darker gray)
-    extents = None
-    if f_overlay:
-        gm.setColors(colors.Color(0.5, 0.5, 0.5), colors.Color(0, 0, 0))
-        extents = gm.ProcessFile(f_overlay)
-    
-    return extents if extents else (0, 0, 100, 100)
+    gm.setColors(colors.Color(0.5, 0.5, 0.5), colors.Color(0, 0, 0))
+    extents = gm.ProcessFile(f_overlay)
     
     return extents
 
-def producePrintoutsForLayer(base_name, layer, canv, pf=None):
+def producePrintoutsForLayer(base_name, layer, canv):
     """Produce printouts for a specific layer with Gerber background"""
     global gerberPageSize, gerberMargin, gerberScale, gerberOffset, gerber_extents
 
@@ -322,10 +192,8 @@ def producePrintoutsForLayer(base_name, layer, canv, pf=None):
         except:
             pass
 
-    # Use provided pick and place data or load from CSV
-    if pf is None:
-        pf = PickAndPlaceFileKicad(base_name + ".CSV")
-    
+    # Load pick and place data
+    pf = PickAndPlaceFileKicad(base_name + ".CSV")
     ngrp = pf.num_groups(layer)
     print(f"Found {ngrp} component groups in {layer} layer")
 
@@ -365,14 +233,6 @@ def main():
     
     # Get base_name, ignoring any flags
     base_name = None
-    use_separate_pos = False
-    
-    # First pass: look for flags
-    for arg in sys.argv[1:]:
-        if arg == "--separate-pos":
-            use_separate_pos = True
-    
-    # Second pass: get base_name (first non-flag argument)
     for arg in sys.argv[1:]:
         if not arg.startswith('--'):
             base_name = arg
@@ -383,52 +243,26 @@ def main():
         print("Example: assygen freewatch")
         sys.exit(1)
     
-    # Create the appropriate pick-and-place loader
-    if use_separate_pos:
-        print("Using separate .pos files")
-        pf = PickAndPlaceFileSeparate(base_name)
-    else:
-        print("Using combined CSV file")
-        # Try to find the CSV file
-        csv_file = None
-        csv_candidates = [base_name + ".CSV", base_name + ".csv"]
-        for candidate in csv_candidates:
-            if os.path.exists(candidate):
-                csv_file = candidate
-                break
-        
-        if csv_file:
-            pf = PickAndPlaceFileKicad(csv_file) 
-        else:
-            print("Error: No CSV file found, but separate .pos files were not detected")
-            sys.exit(1)
-    
     # Create PDF with full features
     canv = canvas.Canvas(base_name + "_assy.pdf", pagesize=gerberPageSize)
     
     try:
         # Process both top and bottom layers
-        producePrintoutsForLayer(base_name, "Top", canv, pf) 
-        producePrintoutsForLayer(base_name, "Bottom", canv, pf)
+        # producePrintoutsForLayer(base_name, "Top", canv)
+        producePrintoutsForLayer(base_name, "Bottom", canv)
         canv.save()
         
         print(f"\nGenerated {base_name}_assy.pdf with Gerber backgrounds!")
-        print("Contains assembly drawings for both Top and Bottom layers")
         
     except FileNotFoundError as e:
         print(f"Error: Required file not found - {e}")
         print("Make sure you have the following files:")
-        if use_separate_pos:
-            print(f"  - {base_name}-top.pos and/or {base_name}-bottom.pos (position files)")
-        else:
-            print(f"  - {base_name}.CSV (pick and place data)")
-        print(f"  - {base_name}.GTL/.GBL or {base_name}-F_Cu.gbr/-B_Cu.gbr (copper layers)")  
-        print(f"  - {base_name}.GTO/.GBO or {base_name}-F_Silkscreen.gbr/-B_Silkscreen.gbr (silkscreen layers)")
+        print(f"  - {base_name}.CSV (pick and place data)")
+        print(f"  - {base_name}.GTL/.GBL (copper layers)")  
+        print(f"  - {base_name}.GTO/.GBO (silkscreen layers)")
         sys.exit(1)
     except Exception as e:
         print(f"Error: {e}")
-        import traceback
-        traceback.print_exc()
         sys.exit(1)
 
 if __name__ == "__main__":

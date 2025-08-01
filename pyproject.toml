@@ -1,0 +1,15 @@
+[project]
+name = "assygen"
+version = "0.1.0"
+description = "Assembly drawing generator for PCBs from Gerber files and pick-and-place data"
+requires-python = ">=3.13"
+dependencies = [
+    "reportlab>=4.4.3",
+]
+
+[project.scripts]
+assygen = "main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

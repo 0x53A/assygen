@@ -227,9 +227,9 @@ except:
     from Plex import *
 import re
 import math
-import exceptions
 import glob
 import os.path
+import sys
 from reportlab.lib.units import inch, mm
 # }}}
 # {{{ Globals
@@ -297,7 +297,7 @@ def UpdateExtents(x1, y1, x2, y2):
         gerberExtents[3] = y2
 # }}}
 # {{{ gerberError
-class GerberError(exceptions.Exception):
+class GerberError(Exception):
     pass
 # }}}
 # {{{ GerberScanner
@@ -1323,7 +1323,7 @@ class GerberMachine:
     # {{{ Handle AD
     def HandleAD( self, str ):
         if str == "AD*":
-            print "Warning: AD parameter block has no parameters."
+            print("Warning: AD parameter block has no parameters.")
             return
         
         m = GerberMachine.rad1.match( str ) or GerberMachine.rad0.match( str )
@@ -1441,12 +1441,12 @@ class GerberMachine:
         elif first2 == "LN":
             pass
         else:
-            print "Unimplemented data block: %s" % str
+            print("Unimplemented data block: %s" % str)
     # }}}
     # {{{ ProcessFile
     def ProcessFile( self, fname ):
         f = open( fname )
-        print "Processing file: %s" % fname
+        print("Processing file: %s" % fname)
         scanner = GerberScanner( f, fname )
         try:
             while 1:
@@ -1463,14 +1463,14 @@ class GerberMachine:
                     self.HandleParameterBlock( token[1] )
                 elif token[0] == 'mblock':
                     self.HandleMacro( token[1] )
-        except GerberError, message:
+        except GerberError as message:
             name, line, col = scanner.position()
-            print "Error in file %s, line %s, column %s" % (name,line,col)
-            print message
-        print "Finished: Extents are (%4.2f, %4.2f) - (%4.2f, %4.2f) (in.)" %(gerberExtents[0] / inch,
+            print("Error in file %s, line %s, column %s" % (name,line,col))
+            print(message)
+        print("Finished: Extents are (%4.2f, %4.2f) - (%4.2f, %4.2f) (in.)" %(gerberExtents[0] / inch,
                                                                               gerberExtents[1] / inch,
                                                                               gerberExtents[2] / inch,
-                                                                              gerberExtents[3] / inch)
+                                                                              gerberExtents[3] / inch))
         
         f.close()
         return gerberExtents
@@ -1487,8 +1487,8 @@ def Translate( fileList ):
 
     pagesizes = []
     if gerberFitPage:
-        print "Prereading for page sizes"
-        print " ----------------------- "
+        print("Prereading for page sizes")
+        print(" ----------------------- ")
         # find out how big pages are
         gm = GerberMachine( gerberOutputPath )
         for f in fileList:
@@ -1499,15 +1499,15 @@ def Translate( fileList ):
             gm.ProcessFile( f )
             pagesizes.append(gerberExtents)
             ResetExtents()
-            print "----"
+            print("----")
         gm.canv.save()
-        print "--------------------------"
+        print("--------------------------")
     
     gm = GerberMachine( gerberOutputPath )
     for f in fileList:
         gm.Initialize()
         if gerberFitPage:
-            print "Reoffsetting: " + f
+            print("Reoffsetting: " + f)
             extents = pagesizes[0]
             pagesizes = pagesizes[1:]
             # print gerberPageSize[0], gerberMargin
@@ -1516,13 +1516,13 @@ def Translate( fileList ):
             scale = min(scale1, scale2)
             gerberScale = (scale,scale)
             gerberOffset = (-extents[0]*scale + gerberMargin, -extents[1]*scale + gerberMargin)
-        print "Offset (in.): (%4.2f, %4.2f)" % (gerberOffset[0]/inch,gerberOffset[1]/inch)
-        print "Scale (in.):  (%4.2f, %4.2f)" % gerberScale
+        print("Offset (in.): (%4.2f, %4.2f)" % (gerberOffset[0]/inch,gerberOffset[1]/inch))
+        print("Scale (in.):  (%4.2f, %4.2f)" % gerberScale)
         gm.canv.translate( gerberOffset[0], gerberOffset[1] )
         gm.canv.scale( gerberScale[0], gerberScale[1] )
         gm.canv.setLineWidth( 0.0 )
         gm.ProcessFile( f )
-        print "----"
+        print("----")
     gm.canv.save()
 
 # }}}
@@ -1539,7 +1539,7 @@ def ReadConfiguration( fileList ):
     if os.path.isfile(figFile):
         glo = {}
         loc = { "inch" : inch }
-        execfile( figFile, glo, loc )
+        exec(open(figFile).read(), glo, loc)
         gerberScale = loc.get( "gerberScale", gerberScale )
         gerberOffset = loc.get( "gerberOffset", gerberOffset )
         gerberPageSize = loc.get( "gerberPageSize", gerberPageSize )
@@ -1553,7 +1553,7 @@ def ReadConfiguration( fileList ):
 # }}}            
 # {{{ InputDefault    
 def InputDefault( message, default ):
-    str = raw_input( message % default )
+    str = input( message % default )
     try:
         value = float(str)
     except:
@@ -1565,7 +1565,7 @@ def Interact():
     global gerberScale, gerberOffset, gerberPageSize, gerberOutputFile, gerberFitPage, gerberMargin
     
     fileList = []
-    str = raw_input( "Gerber files (wildcards OK): " )
+    str = input( "Gerber files (wildcards OK): " )
     lst = str.split()
     for item in lst:
         fileList = fileList + glob.glob( item )
@@ -1579,7 +1579,7 @@ def Interact():
     height = InputDefault( "Page height (inches) [%3.1f]: ", height/inch ) * inch
     gerberPageSize = (width,height)
     
-    str = raw_input( "Fit to page? (1=yes,0=no) [%s]: " % gerberFitPage )
+    str = input( "Fit to page? (1=yes,0=no) [%s]: " % gerberFitPage )
     try:
         gerberFitPage = int(str)
     except:
@@ -1598,7 +1598,7 @@ def Interact():
         yscale = InputDefault( "Y Scale [%3.1f]: ", yscale )
         gerberScale = (xscale,yscale)
     
-    response = raw_input( "Output file [%s]: " % gerberOutputFile )
+    response = input( "Output file [%s]: " % gerberOutputFile )
     if response:
         gerberOutputFile = response
     
