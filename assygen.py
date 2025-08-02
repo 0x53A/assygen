@@ -385,6 +385,7 @@ class PickAndPlaceFile:
         
         # Calculate dynamic column widths based on content
         color_width = 15 * mm  # Fixed width for color square
+        count_width = 20 * mm  # Fixed width for count column (small numbers)
         
         # Find maximum content lengths for each column
         max_value_len = 0
@@ -417,18 +418,19 @@ class PickAndPlaceFile:
         package_width = max(min_col_width, min(max_col_width, max_package_len * char_width + 4 * mm))
         
         # Calculate remaining space for refs column
-        available_width = page_width - 30 * mm - color_width - value_width - package_width  # Total minus margins and other columns
+        available_width = page_width - 30 * mm - color_width - count_width - value_width - package_width  # Total minus margins and other columns
         refs_width = max(30 * mm, min(available_width * 0.8, max_refs_len * char_width + 4 * mm))  # Use 80% of available space max
         
         if verbose:
-            print(f"Column widths: color={color_width/mm:.1f}mm, value={value_width/mm:.1f}mm, package={package_width/mm:.1f}mm, refs={refs_width/mm:.1f}mm")
+            print(f"Column widths: color={color_width/mm:.1f}mm, count={count_width/mm:.1f}mm, value={value_width/mm:.1f}mm, package={package_width/mm:.1f}mm, refs={refs_width/mm:.1f}mm")
         
         # Column definitions: x_position, width, header_text
         columns = [
             (0 * mm, color_width, "Color"),
-            (color_width, value_width, "Value"), 
-            (color_width + value_width, package_width, "Package"),
-            (color_width + value_width + package_width, refs_width, "Refs")
+            (color_width, count_width, "Count"),
+            (color_width + count_width, value_width, "Value"), 
+            (color_width + count_width + value_width, package_width, "Package"),
+            (color_width + count_width + value_width + package_width, refs_width, "Refs")
         ]
         
         table_width = sum(col[1] for col in columns)  # Total width
@@ -535,14 +537,15 @@ class PickAndPlaceFile:
             
             # Calculate text truncation based on column widths (approximate 2mm per character)
             char_width = 2 * mm
-            value_max_chars = max(1, int((columns[1][1] - 4 * mm) / char_width))
-            package_max_chars = max(1, int((columns[2][1] - 4 * mm) / char_width))
-            refs_max_chars = max(1, int((columns[3][1] - 4 * mm) / char_width))
+            value_max_chars = max(1, int((columns[2][1] - 4 * mm) / char_width))
+            package_max_chars = max(1, int((columns[3][1] - 4 * mm) / char_width))
+            refs_max_chars = max(1, int((columns[4][1] - 4 * mm) / char_width))
             
             # Draw text in each column (skip color column)
-            canv.drawString(table_x + columns[1][0] + 2 * mm, text_y, group[0].ref[0:value_max_chars])  # Value
-            canv.drawString(table_x + columns[2][0] + 2 * mm, text_y, group[0].package[0:package_max_chars])  # Package
-            canv.drawString(table_x + columns[3][0] + 2 * mm, text_y, refs[0:refs_max_chars])  # Refs
+            canv.drawString(table_x + columns[1][0] + 2 * mm, text_y, str(len(group)))  # Count
+            canv.drawString(table_x + columns[2][0] + 2 * mm, text_y, group[0].ref[0:value_max_chars])  # Value
+            canv.drawString(table_x + columns[3][0] + 2 * mm, text_y, group[0].package[0:package_max_chars])  # Package
+            canv.drawString(table_x + columns[4][0] + 2 * mm, text_y, refs[0:refs_max_chars])  # Refs
 
 class PickAndPlaceFileKicad(PickAndPlaceFile):
     def __init__(self, fname, report_parser=None, verbose=False):
