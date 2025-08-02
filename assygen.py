@@ -15,7 +15,7 @@ gerberMargin = 0.75 * 25.4 * mm  # 0.75 inch margin
 gerberScale = (1.0, 1.0)
 gerberOffset = (0.0, 0.0)
 
-def determine_optimal_orientation(gerber_extents):
+def determine_optimal_orientation_with_extents(base_name, verbose=False):
     """Determine optimal PDF orientation based on PCB dimensions"""
     if not gerber_extents or gerber_extents[0] == float('inf'):
         # If no valid extents, default to portrait
@@ -334,7 +334,7 @@ def find_gerber_files(base_name, layer):
     
     return copper_file, overlay_file
 
-def get_pcb_extents(base_name):
+def get_pcb_extents(base_name, verbose=False):
     """Get PCB extents from Gerber files without rendering"""
     # Try both Top and Bottom layers to get overall PCB dimensions
     layers_to_check = ["Top", "Bottom"]
@@ -353,7 +353,7 @@ def get_pcb_extents(base_name):
             
             try:
                 ctmp = temp_canvas.Canvas(temp_name)
-                gm = GerberMachine("", ctmp)
+                gm = GerberMachine("", ctmp, verbose=verbose)
                 gm.Initialize()
                 ResetExtents()
                 
@@ -388,7 +388,29 @@ def get_pcb_extents(base_name):
     
     return None
 
-def renderGerber(base_name, layer, canv):
+def determine_optimal_orientation(pcb_extents):
+    """Determine optimal page orientation based on PCB dimensions"""
+    from reportlab.lib.pagesizes import letter, landscape
+    
+    if not pcb_extents:
+        print("Warning: Could not determine PCB extents, using default orientation")
+        return letter
+    
+    min_x, min_y, max_x, max_y = pcb_extents
+    pcb_width = max_x - min_x
+    pcb_height = max_y - min_y
+    
+    print(f"PCB dimensions: {pcb_width/mm:.1f} x {pcb_height/mm:.1f} mm")
+    
+    # Choose orientation based on PCB aspect ratio
+    if pcb_width > pcb_height:
+        print("Using landscape orientation for wide PCB")
+        return landscape(letter)
+    else:
+        print("Using portrait orientation for tall/square PCB") 
+        return letter
+
+def renderGerber(base_name, layer, canv, verbose=False):
     """Render Gerber files as background layers"""
     global gerber_extents
     
@@ -399,7 +421,7 @@ def renderGerber(base_name, layer, canv):
         return (0, 0, 100, 100)  # Return dummy extents
 
     canv.setLineWidth(0.0)
-    gm = GerberMachine("", canv)
+    gm = GerberMachine("", canv, verbose=verbose)
     gm.Initialize()
     ResetExtents()
     
@@ -418,7 +440,7 @@ def renderGerber(base_name, layer, canv):
     
     return extents
 
-def producePrintoutsForLayer(base_name, layer, canv, pf=None):
+def producePrintoutsForLayer(base_name, layer, canv, pf=None, verbose=False):
     """Produce printouts for a specific layer with Gerber background"""
     global gerberPageSize, gerberMargin, gerberScale, gerberOffset, gerber_extents
 
@@ -434,7 +456,7 @@ def producePrintoutsForLayer(base_name, layer, canv, pf=None):
     
     try:
         ctmp = temp_canvas.Canvas(temp_name)
-        ext = renderGerber(base_name, layer, ctmp)
+        ext = renderGerber(base_name, layer, ctmp, verbose=verbose)
         ctmp.save()
         
         # Calculate scale and offset to fit page, reserving space for table
@@ -498,7 +520,7 @@ def producePrintoutsForLayer(base_name, layer, canv, pf=None):
             canv.scale(gerberScale[0], gerberScale[1])
 
         # Render Gerber background
-        renderGerber(base_name, layer, canv)
+        renderGerber(base_name, layer, canv, verbose=verbose)
         
         # Draw component overlay
         pf.draw(layer, page * 6, n_comps, canv)
@@ -519,11 +541,14 @@ def main():
     # Get base_name, ignoring any flags
     base_name = None
     use_separate_pos = False
+    verbose = False
     
     # First pass: look for flags
     for arg in sys.argv[1:]:
         if arg == "--separate-pos":
             use_separate_pos = True
+        elif arg == "--verbose":
+            verbose = True
     
     # Second pass: get base_name (first non-flag argument)
     for arg in sys.argv[1:]:
@@ -558,7 +583,7 @@ def main():
     
     # Determine optimal page orientation based on PCB dimensions
     print("\nAnalyzing PCB dimensions for optimal orientation...")
-    pcb_extents = get_pcb_extents(base_name)
+    pcb_extents = get_pcb_extents(base_name, verbose=verbose)
     optimal_pagesize = determine_optimal_orientation(pcb_extents)
     
     # Update global gerberPageSize for consistent use throughout
@@ -570,8 +595,8 @@ def main():
     
     try:
         # Process both top and bottom layers
-        producePrintoutsForLayer(base_name, "Top", canv, pf) 
-        producePrintoutsForLayer(base_name, "Bottom", canv, pf)
+        producePrintoutsForLayer(base_name, "Top", canv, pf, verbose=verbose) 
+        producePrintoutsForLayer(base_name, "Bottom", canv, pf, verbose=verbose)
         canv.save()
         
         print(f"\nGenerated {base_name}_assy.pdf with Gerber backgrounds!")
@@ -586,6 +611,10 @@ def main():
             print(f"  - {base_name}.CSV (pick and place data)")
         print(f"  - {base_name}.GTL/.GBL or {base_name}-F_Cu.gbr/-B_Cu.gbr (copper layers)")  
         print(f"  - {base_name}.GTO/.GBO or {base_name}-F_Silkscreen.gbr/-B_Silkscreen.gbr (silkscreen layers)")
+        sys.exit(1)
+    except PermissionError as e:
+        print(f"Error: Permission denied - {e}")
+        print("Make sure the output directory is writable and the PDF file is not open in another application.")
         sys.exit(1)
     except Exception as e:
         print(f"Error: {e}")

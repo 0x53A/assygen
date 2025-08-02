@@ -55,8 +55,9 @@ class GerberExtents:
 class ModernGerberParser:
     """Modern Gerber parser using regex instead of plex"""
     
-    def __init__(self, canvas=None):
+    def __init__(self, canvas=None, verbose=False):
         self.canvas = canvas
+        self.verbose = verbose
         self.apertures = {}
         self.current_aperture = None
         self.current_x = 0
@@ -67,6 +68,17 @@ class ModernGerberParser:
         self.fg_color = colors.black
         self.bg_color = colors.white
         
+        # Interpolation mode: 1=linear, 2=clockwise arc, 3=counterclockwise arc
+        self.interpolation_mode = 1
+        
+        # Arc center offset (I, J parameters)
+        self.arc_center_i = 0
+        self.arc_center_j = 0
+        
+        # Track unrecognized/skipped commands for verbose output
+        self.unrecognized_commands = set()
+        self.skipped_commands = set()
+        
         # Regex patterns for Gerber commands
         self.patterns = {
             'format': re.compile(r'%FSLAX(\d)(\d)Y(\d)(\d)\*%'),
@@ -74,8 +86,12 @@ class ModernGerberParser:
             'aperture_def': re.compile(r'%ADD(\d+)([CR]),([0-9.X]+)\*%'),
             'aperture_select': re.compile(r'D(\d+)\*'),
             'coordinate': re.compile(r'X(-?\d+)Y(-?\d+)D(\d+)\*'),
+            'coordinate_with_arc': re.compile(r'X(-?\d+)Y(-?\d+)I(-?\d+)J(-?\d+)D(\d+)\*'),
             'x_only': re.compile(r'X(-?\d+)D(\d+)\*'),
             'y_only': re.compile(r'Y(-?\d+)D(\d+)\*'),
+            'arc_params': re.compile(r'I(-?\d+)J(-?\d+)'),
+            'g_command': re.compile(r'G0*([123])\*?'),
+            'g74_g75': re.compile(r'G(74|75)\*'),
             'comment': re.compile(r'G04.*\*'),
             'end': re.compile(r'M02\*'),
         }
@@ -126,7 +142,27 @@ class ModernGerberParser:
         
         bounds = self.extents.get_bounds()
         print(f"Gerber extents: ({bounds[0]:.2f}, {bounds[1]:.2f}) to ({bounds[2]:.2f}, {bounds[3]:.2f})")
+        
+        # Print verbose information if requested
+        if self.verbose:
+            self._print_verbose_summary()
+        
         return bounds
+    
+    def _print_verbose_summary(self):
+        """Print summary of unrecognized/skipped commands in verbose mode"""
+        if self.unrecognized_commands:
+            print("\n--- Unrecognized Gerber commands ---")
+            for cmd in sorted(self.unrecognized_commands):
+                print(f"  {cmd}")
+        
+        if self.skipped_commands:
+            print("\n--- Skipped Gerber commands ---")
+            for cmd in sorted(self.skipped_commands):
+                print(f"  {cmd}")
+        
+        if not self.unrecognized_commands and not self.skipped_commands:
+            print("\n--- All commands recognized ---")
     
     def _process_line(self, line):
         """Process a single line of Gerber code"""
@@ -173,6 +209,32 @@ class ModernGerberParser:
             self.current_aperture = self.apertures.get(aperture_id)
             return
         
+        # Check for G commands (interpolation modes)
+        match = self.patterns['g_command'].match(line)
+        if match:
+            self.interpolation_mode = int(match.group(1))
+            return
+        
+        # Check for G74/G75 (quadrant mode - informational only)
+        match = self.patterns['g74_g75'].match(line)
+        if match:
+            # G74 = single quadrant mode, G75 = multi quadrant mode
+            # These affect how arc coordinates are interpreted
+            # For now, we'll just acknowledge them without changing behavior
+            return
+        
+        # Check for coordinate with arc parameters
+        match = self.patterns['coordinate_with_arc'].match(line)
+        if match:
+            x = self.parse_coordinate(match.group(1))
+            y = self.parse_coordinate(match.group(2))
+            i = self.parse_coordinate(match.group(3))
+            j = self.parse_coordinate(match.group(4))
+            operation = int(match.group(5))
+            
+            self._execute_arc_operation(x, y, i, j, operation)
+            return
+        
         # Check for coordinate with operation
         match = self.patterns['coordinate'].match(line)
         if match:
@@ -203,16 +265,40 @@ class ModernGerberParser:
         if self.patterns['comment'].match(line) or self.patterns['end'].match(line):
             return
         
-        # Ignore unrecognized commands (for now)
-        if line.startswith('G') or line.startswith('%') or line.startswith('D'):
+        # Track unrecognized commands for verbose mode
+        if line.startswith('%'):
+            # Skip parameter blocks we don't recognize
+            if self.verbose and line not in self.skipped_commands:
+                self.skipped_commands.add(line)
             return
+        elif line.startswith('D') and not self.patterns['aperture_select'].match(line):
+            # Skip D codes we don't handle
+            if self.verbose and line not in self.skipped_commands:
+                self.skipped_commands.add(line)
+            return
+        elif line.startswith('G') and not self.patterns['g_command'].match(line):
+            # Skip G codes we don't handle
+            if self.verbose and line not in self.unrecognized_commands:
+                self.unrecognized_commands.add(line)
+            return
+        elif line.startswith('M') and not self.patterns['end'].match(line):
+            # Skip M codes we don't handle
+            if self.verbose and line not in self.skipped_commands:
+                self.skipped_commands.add(line)
+            return
+        
+        # Any other unrecognized command
+        if self.verbose and line not in self.unrecognized_commands:
+            self.unrecognized_commands.add(line)
     
     def _execute_operation(self, x, y, operation):
         """Execute a drawing operation"""
-        if operation == 1:  # Move (interpolate) - draw line
+        if operation == 1:  # Move (interpolate) - draw line or arc
             if self.canvas and self.current_aperture:
-                # Draw line from current position to new position
-                self._draw_line(self.current_x, self.current_y, x, y)
+                if self.interpolation_mode == 1:  # Linear interpolation
+                    self._draw_line(self.current_x, self.current_y, x, y)
+                else:  # Should not happen here - arcs handled separately
+                    self._draw_line(self.current_x, self.current_y, x, y)
             self.extents.update(x, y, self.current_aperture)
         
         elif operation == 2:  # Move (without drawing)
@@ -221,6 +307,16 @@ class ModernGerberParser:
         elif operation == 3:  # Flash (place aperture)
             if self.canvas and self.current_aperture:
                 self.current_aperture.draw_flash(self.canvas, x, y)
+            self.extents.update(x, y, self.current_aperture)
+        
+        # Update current position
+        self.current_x = x
+        self.current_y = y
+    
+    def _execute_arc_operation(self, x, y, i, j, operation):
+        """Execute an arc drawing operation"""
+        if operation == 1 and self.canvas and self.current_aperture:  # Draw arc
+            self._draw_arc(self.current_x, self.current_y, x, y, i, j)
             self.extents.update(x, y, self.current_aperture)
         
         # Update current position
@@ -255,11 +351,62 @@ class ModernGerberParser:
             # For circular apertures, draw as line with round caps
             width = self.current_aperture.params[0]
             self.canvas.setLineWidth(width)
+            self.canvas.setLineCap(1)  # Round caps for smoother appearance
             self.canvas.line(x1, y1, x2, y2)
         
         # Update extents for the line
         self.extents.update(x1, y1, self.current_aperture)
         self.extents.update(x2, y2, self.current_aperture)
+    
+    def _draw_arc(self, x1, y1, x2, y2, i, j):
+        """Draw a circular arc using the current aperture"""
+        if not self.current_aperture or not self.canvas:
+            return
+        
+        # Calculate arc center
+        center_x = x1 + i
+        center_y = y1 + j
+        
+        # Calculate start and end angles
+        start_angle = math.atan2(y1 - center_y, x1 - center_x) * 180 / math.pi
+        end_angle = math.atan2(y2 - center_y, x2 - center_x) * 180 / math.pi
+        
+        # Calculate radius
+        radius = math.sqrt(i*i + j*j)
+        
+        # Determine sweep direction based on interpolation mode
+        if self.interpolation_mode == 2:  # Clockwise (G02)
+            if end_angle > start_angle:
+                end_angle -= 360
+        else:  # Counterclockwise (G03)
+            if end_angle < start_angle:
+                end_angle += 360
+        
+        # For smooth arc rendering, approximate with multiple small line segments
+        num_segments = max(8, int(abs(end_angle - start_angle) / 5))  # 5 degrees per segment minimum
+        
+        if self.current_aperture.shape == 'C':
+            # For circular apertures, draw arc as connected line segments
+            width = self.current_aperture.params[0]
+            self.canvas.setLineWidth(width)
+            self.canvas.setLineCap(1)  # Round caps
+            
+            # Draw arc as series of connected line segments
+            prev_x, prev_y = x1, y1
+            for i in range(1, num_segments + 1):
+                angle = start_angle + (end_angle - start_angle) * i / num_segments
+                angle_rad = angle * math.pi / 180
+                curr_x = center_x + radius * math.cos(angle_rad)
+                curr_y = center_y + radius * math.sin(angle_rad)
+                
+                self.canvas.line(prev_x, prev_y, curr_x, curr_y)
+                prev_x, prev_y = curr_x, curr_y
+        
+        # Update extents for the arc
+        self.extents.update(x1, y1, self.current_aperture)
+        self.extents.update(x2, y2, self.current_aperture)
+        self.extents.update(center_x - radius, center_y - radius, self.current_aperture)
+        self.extents.update(center_x + radius, center_y + radius, self.current_aperture)
 
 # Global variables for compatibility with original code
 gerber_extents = [0, 0, 0, 0]
@@ -279,8 +426,8 @@ def UpdateExtents(x1, y1, x2, y2):
 
 # Compatibility class that mimics the original GerberMachine interface
 class GerberMachine:
-    def __init__(self, filename, canvas):
-        self.parser = ModernGerberParser(canvas)
+    def __init__(self, filename, canvas, verbose=False):
+        self.parser = ModernGerberParser(canvas, verbose=verbose)
         self.canvas = canvas
     
     def Initialize(self):

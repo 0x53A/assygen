@@ -4,11 +4,15 @@ AssyGen is a tool for generating professional assembly drawings for PCBs from pi
 
 ## Features
 
-- **Complete PCB visualization**: Renders Gerber files as realistic PCB backgrounds
-- **Multi-layer support**: Processes both top (F.Cu) and bottom (B.Cu) layers
+- **Complete PCB visualization**: Renders Gerber files as realistic PCB backgrounds with smooth curves and arcs
+- **Automatic orientation**: Intelligently chooses landscape/portrait based on PCB dimensions for optimal space usage
+- **Multi-layer support**: Processes both top (F.Cu) and bottom (B.Cu) layers with proper scaling
+- **Professional tables**: Clean bordered component tables with color coding and proper layout
+- **Flexible file formats**: Supports both combined CSV and separate .pos files (newer KiCad format)
+- **Dual naming conventions**: Works with both old (.GTL/.GTO) and new (-F_Cu.gbr/-F_Silkscreen.gbr) Gerber naming
 - **Color-coded component placement**: Groups components by value with distinct colors
-- **Professional PDF output**: Multi-page documents with assembly guides and tables
-- **KiCad compatibility**: Works directly with KiCad pick-and-place CSV files
+- **Professional PDF output**: Multi-page documents with assembly guides and component tables
+- **KiCad compatibility**: Works directly with KiCad pick-and-place CSV/pos files
 - **Modern Python 3**: Built with contemporary libraries and practices
 
 ## Installation
@@ -27,16 +31,55 @@ uv sync
 
 ```bash
 # Generate assembly drawing from pick-and-place data and Gerber files
-uv run assygen <base_name>
+uv run main.py <base_name> [directory] [--verbose]
 
-# Example:
-uv run assygen freewatch
+# Examples:
+uv run main.py freewatch                           # Files in current directory
+uv run main.py project_name /path/to/gerber/files  # Files in different directory
+uv run main.py freewatch . --verbose               # Enable verbose Gerber parsing
 ```
 
-This will:
-1. Read `<base_name>.CSV` (pick-and-place data)
-2. Read Gerber files (`<base_name>.GTL`, `.GTO`, `.GBL`, `.GBO`)
-3. Generate `<base_name>_assy.pdf` with complete assembly drawings
+**Command line options:**
+- `<base_name>`: Base name of your PCB files (required)
+- `[directory]`: Directory containing the files (optional, defaults to current directory)  
+- `--verbose`: Enable detailed Gerber parsing output, shows any unrecognized/skipped commands
+- `--help`: Show help message with usage examples
+- `--version`: Show version information
+
+The tool automatically:
+1. Detects file format (combined CSV vs separate .pos files)
+2. Finds Gerber files using either naming convention
+3. Analyzes PCB dimensions for optimal orientation
+4. Generates `<base_name>_assy.pdf` with complete assembly drawings
+
+### Supported File Formats
+
+**Position Files:**
+- `<base_name>.CSV` (combined, older KiCad format)
+- `<base_name>-top.pos` + `<base_name>-bottom.pos` (separate, newer KiCad format)
+
+**Gerber Files:**
+- Old: `<base_name>.GTL/.GTO/.GBL/.GBO`
+- New: `<base_name>-F_Cu.gbr/-F_Silkscreen.gbr/-B_Cu.gbr/-B_Silkscreen.gbr`
+
+### Verbose Mode
+
+Use the `--verbose` flag to enable detailed Gerber parsing analysis:
+
+```bash
+uv run main.py freewatch . --verbose
+```
+
+In verbose mode, the tool will:
+- Display all unrecognized Gerber commands (helps identify parser gaps)
+- Show skipped commands that are acknowledged but not implemented
+- Confirm when all commands in a file are fully recognized
+- Help diagnose issues with complex Gerber files
+
+This is useful for:
+- Debugging Gerber parsing issues
+- Understanding parser completeness 
+- Validating that your Gerber files are fully supported
 
 ## Input Files
 
@@ -84,10 +127,12 @@ The project structure:
 
 ### Modern Gerber Parser
 AssyGen includes a custom-built Gerber file parser that:
-- Replaces the outdated `plex` dependency with regex-based parsing
-- Handles RS-274X format Gerber files
-- Supports circles, rectangles, and basic drawing operations
+- Replaces the outdated `plex` dependency with regex-based parsing  
+- Handles RS-274X format Gerber files with full arc interpolation support
+- Supports circles, rectangles, lines, and smooth curved traces
+- Renders G02/G03 circular interpolation as smooth arcs (not segments)
 - Calculates proper extents for automatic scaling
+- Uses round line caps for professional appearance
 
 ### Dependencies
 - `reportlab`: Professional PDF generation

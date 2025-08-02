@@ -2,33 +2,87 @@ from assygen import main as assygen_main
 import sys
 import os
 
+def print_help():
+    """Print help information"""
+    print("""
+Usage: uv run main.py <base_name> [directory] [--verbose]
+
+Arguments:
+  base_name     Base name of your project files (without extensions)
+  directory     Optional: Directory containing the files (default: current)
+  --verbose     Optional: Enable detailed Gerber parsing output
+
+Examples:
+  uv run main.py freewatch                          # Files in current directory  
+  uv run main.py my_project /path/to/exports        # Files in specific directory
+  uv run main.py freewatch . --verbose              # Enable verbose Gerber analysis
+
+File Requirements:
+  Position files (one of):
+    - <base_name>.CSV                               # Combined format
+    - <base_name>-top.pos + <base_name>-bottom.pos  # Separate format
+  
+  Gerber files (old or new naming):
+    - Old: <base_name>.GTL/.GTO/.GBL/.GBO
+    - New: <base_name>-F_Cu.gbr/-F_Silkscreen.gbr/-B_Cu.gbr/-B_Silkscreen.gbr
+
+Output:
+  <base_name>_assy.pdf - Multi-page assembly drawing with component tables
+
+Features:
+  • Automatic landscape/portrait orientation based on PCB dimensions
+  • Professional bordered component tables with color coding
+  • Smooth Gerber rendering with arc interpolation
+  • Support for both old and new KiCad file naming conventions
+""")
+
 def main():
     print("AssyGen - Assembly Drawing Generator for PCBs")
     print("=" * 50)
     
+    if len(sys.argv) < 2 or sys.argv[1] in ['--help', '-h', 'help']:
+        print_help()
+        sys.exit(0)
+    
+    if sys.argv[1] in ['--version', '-v']:
+        print("AssyGen v2.0 - Modern Python 3 Assembly Drawing Generator")
+        print("Features: Auto-orientation, smooth Gerber rendering, professional tables")
+        sys.exit(0)
+    
     if len(sys.argv) < 2:
-        print("Usage: assygen <base_name> [directory]")
+        print("Usage: assygen <base_name> [directory] [--verbose]")
         print("Examples:")
         print("  assygen freewatch                    # Files in current directory")
         print("  assygen freewatch /path/to/files     # Files in specified directory")
         print("  assygen /full/path/to/basename       # Full path to base name")
+        print("  assygen freewatch . --verbose        # Enable verbose Gerber parsing")
         print("\nGenerates assembly drawings with Gerber PCB backgrounds")
         sys.exit(1)
     
-    # Parse arguments
-    if len(sys.argv) >= 3:
+    # Check for verbose flag
+    verbose = '--verbose' in sys.argv
+    
+    # Filter out flags to get positional arguments
+    args = [arg for arg in sys.argv[1:] if not arg.startswith('-')]
+    
+    if len(args) < 1:
+        print("Error: Missing required argument <base_name>")
+        sys.exit(1)
+    
+    # Parse arguments (excluding flags)
+    if len(args) >= 2:
         # Directory specified
-        base_name = sys.argv[1]
-        directory = sys.argv[2]
+        base_name = args[0]
+        directory = args[1]
         full_base_path = os.path.join(directory, base_name)
-    elif os.path.dirname(sys.argv[1]):
+    elif os.path.dirname(args[0]):
         # Full path provided
-        full_base_path = sys.argv[1]
+        full_base_path = args[0]
         directory = os.path.dirname(full_base_path)
         base_name = os.path.basename(full_base_path)
     else:
         # Just base name, use current directory
-        base_name = sys.argv[1]
+        base_name = args[0]
         directory = "."
         full_base_path = base_name
     
@@ -130,6 +184,10 @@ def main():
         # Pass information about file format to assygen
         if use_separate_pos_files:
             sys.argv.append("--separate-pos")
+        
+        # Pass verbose flag to assygen
+        if verbose:
+            sys.argv.append("--verbose")
             
         assygen_main()
         
