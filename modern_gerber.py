@@ -226,7 +226,8 @@ class DrillFileParser:
     
     def process_file(self, filename):
         """Process a drill file"""
-        print(f"Processing drill file: {filename}")
+        if self.verbose:
+            print(f"Processing drill file: {filename}")
         
         try:
             with open(filename, 'r') as f:
@@ -263,8 +264,9 @@ class DrillFileParser:
                 continue
         
         bounds = self.extents.get_bounds()
-        print(f"Drill extents: ({bounds[0]:.2f}, {bounds[1]:.2f}) to ({bounds[2]:.2f}, {bounds[3]:.2f})")
-        print(f"Total holes drilled: {len(self.holes)}")
+        if self.verbose:
+            print(f"Drill extents: ({bounds[0]:.2f}, {bounds[1]:.2f}) to ({bounds[2]:.2f}, {bounds[3]:.2f})")
+            print(f"Total holes drilled: {len(self.holes)}")
         
         return bounds
     
@@ -435,7 +437,8 @@ class ModernGerberParser:
     
     def process_file(self, filename):
         """Process a Gerber file"""
-        print(f"Processing Gerber file: {filename}")
+        if self.verbose:
+            print(f"Processing Gerber file: {filename}")
         
         try:
             with open(filename, 'r') as f:
@@ -463,7 +466,8 @@ class ModernGerberParser:
                 continue
         
         bounds = self.extents.get_bounds()
-        print(f"Gerber extents: ({bounds[0]:.2f}, {bounds[1]:.2f}) to ({bounds[2]:.2f}, {bounds[3]:.2f})")
+        if self.verbose:
+            print(f"Gerber extents: ({bounds[0]:.2f}, {bounds[1]:.2f}) to ({bounds[2]:.2f}, {bounds[3]:.2f})")
         
         # Print verbose information if requested
         if self.verbose:

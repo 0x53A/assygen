@@ -20,7 +20,7 @@ class KiCadReportParser:
     def __init__(self):
         self.components = {}  # ref -> component data
         
-    def parse_report_file(self, rpt_file_path):
+    def parse_report_file(self, rpt_file_path, verbose=True):
         """Parse a KiCad .rpt file and extract component data"""
         try:
             with open(rpt_file_path, 'r', encoding='utf-8') as f:
@@ -41,7 +41,8 @@ class KiCadReportParser:
                 if component_data:
                     self.components[ref] = component_data
         
-        print(f"Parsed {len(self.components)} components from report file")
+        if verbose:
+            print(f"Parsed {len(self.components)} components from report file")
     
     def _parse_module(self, ref, content):
         """Parse a single module section"""
@@ -316,7 +317,7 @@ class PickAndPlaceFile:
     def num_groups(self, layer):
         return len(self.split_parts(layer, 0, 10000))
 
-    def draw(self, layer, index, n_comps, canv):
+    def draw(self, layer, index, n_comps, canv, verbose=False):
         parts = self.split_parts(layer, index, n_comps)
         n = 0
         exact_count = 0
@@ -359,10 +360,11 @@ class PickAndPlaceFile:
                 
                 canv.restoreState()
         
-        print(f"Drew {exact_count} rectangles (exact) and {cross_count} crosses (estimated)")
+        if verbose:
+            print(f"Drew {exact_count} rectangles (exact) and {cross_count} crosses (estimated)")
         
         # Print cross size summary if we have crosses
-        if hasattr(self, 'cross_sizes') and self.cross_sizes:
+        if verbose and hasattr(self, 'cross_sizes') and self.cross_sizes:
             min_cross = min(self.cross_sizes)
             max_cross = max(self.cross_sizes)
             avg_cross = sum(self.cross_sizes) / len(self.cross_sizes)
@@ -458,8 +460,9 @@ class PickAndPlaceFile:
             canv.drawString(table_x + columns[3][0] + 2 * mm, text_y, dsgn[0:35])
 
 class PickAndPlaceFileKicad(PickAndPlaceFile):
-    def __init__(self, fname, report_parser=None):
-        print("Loading pick and place file:", fname)
+    def __init__(self, fname, report_parser=None, verbose=False):
+        if verbose:
+            print("Loading pick and place file:", fname)
         
         self.report_parser = report_parser  # Store reference to report parser
         
@@ -549,7 +552,7 @@ class PickAndPlaceFileKicad(PickAndPlaceFile):
 
 class PickAndPlaceFileSeparate(PickAndPlaceFile):
     """Handle separate .pos files for top and bottom layers"""
-    def __init__(self, base_name, report_parser=None):
+    def __init__(self, base_name, report_parser=None, verbose=False):
         import os
         
         self.report_parser = report_parser  # Store reference to report parser
@@ -568,13 +571,15 @@ class PickAndPlaceFileSeparate(PickAndPlaceFile):
         # Load top layer file
         top_file = base_name + "-top.pos"
         if os.path.exists(top_file):
-            print(f"Loading top layer file: {top_file}")
+            if verbose:
+                print(f"Loading top layer file: {top_file}")
             self._load_pos_file(top_file, "Top")
         
         # Load bottom layer file  
         bottom_file = base_name + "-bottom.pos"
         if os.path.exists(bottom_file):
-            print(f"Loading bottom layer file: {bottom_file}")
+            if verbose:
+                print(f"Loading bottom layer file: {bottom_file}")
             self._load_pos_file(bottom_file, "Bottom")
     
     def _load_pos_file(self, filename, layer):
@@ -780,26 +785,30 @@ def get_pcb_extents(base_name, verbose=False):
     
     return None
 
-def determine_optimal_orientation(pcb_extents):
+def determine_optimal_orientation(pcb_extents, verbose=False):
     """Determine optimal page orientation based on PCB dimensions"""
     from reportlab.lib.pagesizes import letter, landscape
     
     if not pcb_extents:
-        print("Warning: Could not determine PCB extents, using default orientation")
+        if verbose:
+            print("Warning: Could not determine PCB extents, using default orientation")
         return letter
     
     min_x, min_y, max_x, max_y = pcb_extents
     pcb_width = max_x - min_x
     pcb_height = max_y - min_y
     
-    print(f"PCB dimensions: {pcb_width/mm:.1f} x {pcb_height/mm:.1f} mm")
+    if verbose:
+        print(f"PCB dimensions: {pcb_width/mm:.1f} x {pcb_height/mm:.1f} mm")
     
     # Choose orientation based on PCB aspect ratio
     if pcb_width > pcb_height:
-        print("Using landscape orientation for wide PCB")
+        if verbose:
+            print("Using landscape orientation for wide PCB")
         return landscape(letter)
     else:
-        print("Using portrait orientation for tall/square PCB") 
+        if verbose:
+            print("Using portrait orientation for tall/square PCB") 
         return letter
 
 def renderGerber(base_name, layer, canv, verbose=False):
@@ -842,7 +851,8 @@ def producePrintoutsForLayer(base_name, layer, canv, pf=None, verbose=False):
     """Produce printouts for a specific layer with Gerber background"""
     global gerberPageSize, gerberMargin, gerberScale, gerberOffset, gerber_extents
 
-    print(f"\nProcessing layer: {layer}")
+    if verbose:
+        print(f"\nProcessing layer: {layer}")
     
     # Create temporary canvas to get extents
     from reportlab.pdfgen import canvas as temp_canvas
@@ -881,10 +891,12 @@ def producePrintoutsForLayer(base_name, layer, canv, pf=None, verbose=False):
             
             gerberOffset = (offset_x, offset_y)
             
-            print(f"Gerber extents: ({ext[0]:.2f}, {ext[1]:.2f}) to ({ext[2]:.2f}, {ext[3]:.2f})")
-            print(f"Scale: {scale:.3f}, Offset: ({gerberOffset[0]/mm:.2f}, {gerberOffset[1]/mm:.2f}) mm")
+            if verbose:
+                print(f"Gerber extents: ({ext[0]:.2f}, {ext[1]:.2f}) to ({ext[2]:.2f}, {ext[3]:.2f})")
+                print(f"Scale: {scale:.3f}, Offset: ({gerberOffset[0]/mm:.2f}, {gerberOffset[1]/mm:.2f}) mm")
         else:
-            print("Warning: Could not determine Gerber extents, using default scaling")
+            if verbose:
+                print("Warning: Could not determine Gerber extents, using default scaling")
             gerberScale = (1.0, 1.0)
             gerberOffset = (50 * mm, 50 * mm)
     
@@ -900,7 +912,8 @@ def producePrintoutsForLayer(base_name, layer, canv, pf=None, verbose=False):
         pf = PickAndPlaceFileKicad(base_name + ".CSV", None)  # No report parser in this fallback case
     
     ngrp = pf.num_groups(layer)
-    print(f"Found {ngrp} component groups in {layer} layer")
+    if verbose:
+        print(f"Found {ngrp} component groups in {layer} layer")
 
     # Generate pages with new layout:
     # Page 1: Table with ALL components
@@ -909,12 +922,14 @@ def producePrintoutsForLayer(base_name, layer, canv, pf=None, verbose=False):
     
     if ngrp > 0:
         # Page 1: Complete component table
-        print(f"Processing page 1: Complete component table ({ngrp} component groups)")
+        if verbose:
+            print(f"Processing page 1: Complete component table ({ngrp} component groups)")
         pf.gen_table(layer, 0, ngrp, canv)
         canv.showPage()
         
         # Page 2: Complete assembly drawing with all components
-        print(f"Processing page 2: Complete assembly drawing with all components")
+        if verbose:
+            print(f"Processing page 2: Complete assembly drawing with all components")
         
         # Save canvas state and apply transformations
         canv.saveState()
@@ -930,7 +945,7 @@ def producePrintoutsForLayer(base_name, layer, canv, pf=None, verbose=False):
         renderGerber(base_name, layer, canv, verbose=verbose)
         
         # Draw ALL components
-        pf.draw(layer, 0, ngrp, canv)
+        pf.draw(layer, 0, ngrp, canv, verbose)
 
         # Restore canvas state
         canv.restoreState()
@@ -939,7 +954,8 @@ def producePrintoutsForLayer(base_name, layer, canv, pf=None, verbose=False):
     # Pages 3+: Traditional 6-components-per-page approach
     for page in range(0, (ngrp + 5) // 6):
         n_comps = min(6, ngrp - page * 6)
-        print(f"Processing page {page + 3} with {n_comps} component groups")
+        if verbose:
+            print(f"Processing page {page + 3} with {n_comps} component groups")
 
         # Save canvas state and apply transformations
         canv.saveState()
@@ -955,7 +971,7 @@ def producePrintoutsForLayer(base_name, layer, canv, pf=None, verbose=False):
         renderGerber(base_name, layer, canv, verbose=verbose)
         
         # Draw component overlay
-        pf.draw(layer, page * 6, n_comps, canv)
+        pf.draw(layer, page * 6, n_comps, canv, verbose)
 
         # Restore canvas state
         canv.restoreState()
@@ -999,17 +1015,21 @@ def main():
     report_parser = None
     report_file = base_name + ".rpt"
     if os.path.exists(report_file):
-        print(f"Found KiCad report file: {report_file}")
+        if verbose:
+            print(f"Found KiCad report file: {report_file}")
         report_parser = KiCadReportParser()
-        report_parser.parse_report_file(report_file)
+        report_parser.parse_report_file(report_file, verbose)
     else:
-        print(f"No report file found ({report_file}), using fallback dimension parsing")
+        if verbose:
+            print(f"No report file found ({report_file}), using fallback dimension parsing")
     
     if use_separate_pos:
-        print("Using separate .pos files")
-        pf = PickAndPlaceFileSeparate(base_name, report_parser)
+        if verbose:
+            print("Using separate .pos files")
+        pf = PickAndPlaceFileSeparate(base_name, report_parser, verbose)
     else:
-        print("Using combined CSV file")
+        if verbose:
+            print("Using combined CSV file")
         # Try to find the CSV file
         csv_file = None
         csv_candidates = [base_name + ".CSV", base_name + ".csv"]
@@ -1019,15 +1039,16 @@ def main():
                 break
         
         if csv_file:
-            pf = PickAndPlaceFileKicad(csv_file, report_parser) 
+            pf = PickAndPlaceFileKicad(csv_file, report_parser, verbose) 
         else:
             print("Error: No CSV file found, but separate .pos files were not detected")
             sys.exit(1)
     
     # Determine optimal page orientation based on PCB dimensions
-    print("\nAnalyzing PCB dimensions for optimal orientation...")
+    if verbose:
+        print("\nAnalyzing PCB dimensions for optimal orientation...")
     pcb_extents = get_pcb_extents(base_name, verbose=verbose)
-    optimal_pagesize = determine_optimal_orientation(pcb_extents)
+    optimal_pagesize = determine_optimal_orientation(pcb_extents, verbose)
     
     # Update global gerberPageSize for consistent use throughout
     global gerberPageSize

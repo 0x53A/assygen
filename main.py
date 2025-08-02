@@ -205,9 +205,11 @@ def main():
     # Change to the target directory so assygen can find the files
     original_dir = os.getcwd()
     try:
+        if verbose:
+            print(f"Changed to directory: {os.getcwd()}")
+            print("Generating assembly drawings with Gerber backgrounds...")
+        
         os.chdir(directory)
-        print(f"Changed to directory: {os.getcwd()}")
-        print("Generating assembly drawings with Gerber backgrounds...")
         
         # Set the base name for assygen (without directory path)
         sys.argv[1] = base_name
