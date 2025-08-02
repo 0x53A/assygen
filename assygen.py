@@ -370,7 +370,9 @@ class PickAndPlaceFile:
             avg_cross = sum(self.cross_sizes) / len(self.cross_sizes)
             print(f"Cross sizes: min={min_cross:.2f}mm, max={max_cross:.2f}mm, avg={avg_cross:.2f}mm")
     
-    def gen_table(self, layer, index, n_comps, canv):
+    def gen_table(self, layer, index, n_comps, canv, max_rows_per_page=None):
+        """Generate component table, optionally with pagination support
+        Returns the number of pages created"""
         parts = self.split_parts(layer, index, n_comps)
 
         # Get current page size to position table correctly
@@ -392,9 +394,47 @@ class PickAndPlaceFile:
         row_height = 6 * mm
         header_height = 8 * mm
         
-        # Calculate total table height
+        # Calculate maximum rows that fit on a page if max_rows_per_page not specified
+        if max_rows_per_page is None:
+            available_height = page_height - 35 * mm - 20 * mm  # Top margin and bottom margin
+            max_rows_per_page = int((available_height - header_height) / row_height)
+        
+        # If all parts fit on one page, use the original logic
+        if len(parts) <= max_rows_per_page:
+            self._draw_single_table_page(parts, canv, table_x, table_y, columns, row_height, header_height, table_width)
+            return 1
+        else:
+            # Split into multiple pages
+            page_num = 1
+            start_idx = 0
+            pages_created = 0
+            while start_idx < len(parts):
+                end_idx = min(start_idx + max_rows_per_page, len(parts))
+                page_parts = parts[start_idx:end_idx]
+                
+                self._draw_single_table_page(page_parts, canv, table_x, table_y, columns, row_height, header_height, table_width, page_num, len(parts), start_idx)
+                pages_created += 1
+                
+                start_idx = end_idx
+                if start_idx < len(parts):  # More pages needed
+                    canv.showPage()
+                    page_num += 1
+            
+            return pages_created
+    
+    def _draw_single_table_page(self, parts, canv, table_x, table_y, columns, row_height, header_height, table_width, page_num=1, total_parts=None, start_idx=0):
+        """Draw a single page of the component table"""
+        # Calculate total table height for this page
         num_data_rows = len(parts)
         total_height = header_height + (num_data_rows * row_height)
+        
+        # Add page info if this is a multi-page table
+        if total_parts and total_parts > len(parts):
+            # Draw page info at top
+            canv.setFont("Helvetica", 10)
+            canv.setFillGray(0)
+            page_info = f"Component Table - Page {page_num} (Components {start_idx + 1}-{start_idx + len(parts)} of {total_parts})"
+            canv.drawString(table_x, table_y + 5 * mm, page_info)
         
         # Draw heavy outer border
         canv.setLineWidth(2.0)
@@ -431,7 +471,6 @@ class PickAndPlaceFile:
         
         # Draw data rows
         canv.setFont("Helvetica", 9)
-        n = 0
         for i, group in enumerate(parts):
             row_y = table_y - header_height - (i * row_height)
             text_y = row_y - (row_height * 0.7)  # Center text vertically
@@ -441,15 +480,14 @@ class PickAndPlaceFile:
             color_y = row_y - (row_height * 0.8)
             color_size = 4 * mm
             
-            # Use modulo to wrap around when there are more component groups than colors
-            color_index = n % len(self.col_map)
+            # Calculate color index based on absolute position in full component list
+            color_index = (start_idx + i) % len(self.col_map)
             canv.setFillColor(self.col_map[color_index])
             canv.setLineWidth(0.5)
             canv.rect(color_x, color_y, color_size, color_size, 1, 1)
             
             # Reset to black for text
             canv.setFillGray(0)
-            n = n + 1
             
             # Build designator string
             dsgn = " ".join(part.name for part in group)
@@ -914,6 +952,8 @@ def producePrintoutsForLayer(base_name, layer, canv, pf=None, verbose=False):
     ngrp = pf.num_groups(layer)
     if verbose:
         print(f"Found {ngrp} component groups in {layer} layer")
+    
+    table_pages = 1  # Default to 1 page for table
 
     # Generate pages with new layout:
     # Page 1: Table with ALL components
@@ -921,15 +961,17 @@ def producePrintoutsForLayer(base_name, layer, canv, pf=None, verbose=False):
     # Page 3+: Current paginated approach (6 components per page)
     
     if ngrp > 0:
-        # Page 1: Complete component table
+        # Page 1+: Complete component table (may span multiple pages)
         if verbose:
-            print(f"Processing page 1: Complete component table ({ngrp} component groups)")
-        pf.gen_table(layer, 0, ngrp, canv)
+            print(f"Processing component table ({ngrp} component groups)")
+        table_pages = pf.gen_table(layer, 0, ngrp, canv)
+        if verbose:
+            print(f"Component table spans {table_pages} page(s)")
         canv.showPage()
         
-        # Page 2: Complete assembly drawing with all components
+        # Next page: Complete assembly drawing with all components
         if verbose:
-            print(f"Processing page 2: Complete assembly drawing with all components")
+            print(f"Processing complete assembly drawing with all components")
         
         # Save canvas state and apply transformations
         canv.saveState()
@@ -951,11 +993,14 @@ def producePrintoutsForLayer(base_name, layer, canv, pf=None, verbose=False):
         canv.restoreState()
         canv.showPage()
     
-    # Pages 3+: Traditional 6-components-per-page approach
+    # Remaining pages: Traditional 6-components-per-page approach
+    # Page numbering accounts for table pages + complete assembly page
+    base_page_num = table_pages + 1  # table pages + complete assembly page
     for page in range(0, (ngrp + 5) // 6):
         n_comps = min(6, ngrp - page * 6)
+        current_page_num = base_page_num + page + 1
         if verbose:
-            print(f"Processing page {page + 3} with {n_comps} component groups")
+            print(f"Processing page {current_page_num} with {n_comps} component groups")
 
         # Save canvas state and apply transformations
         canv.saveState()
