@@ -288,13 +288,14 @@ def parse_component_dimensions(package_name):
     return (default_w, default_h)
 
 class PPComponent:
-    def __init__(self, xc, yc, w, h, name, desc, ref, rotation=0.0, exact_dimensions=False):
+    def __init__(self, xc, yc, w, h, name, desc, ref, rotation=0.0, exact_dimensions=False, package=None):
         self.xc = xc
         self.yc = yc
         self.w = w
         self.h = h
         self.rotation = rotation  # Store rotation for proper rendering
         self.exact_dimensions = exact_dimensions  # Flag to indicate if dimensions are from KiCad report
+        self.package = package or "Unknown"  # Store footprint/package information
         
         if self.w == 0:
             self.w = 0.8 * mm
@@ -370,7 +371,7 @@ class PickAndPlaceFile:
             avg_cross = sum(self.cross_sizes) / len(self.cross_sizes)
             print(f"Cross sizes: min={min_cross:.2f}mm, max={max_cross:.2f}mm, avg={avg_cross:.2f}mm")
     
-    def gen_table(self, layer, index, n_comps, canv, max_rows_per_page=None):
+    def gen_table(self, layer, index, n_comps, canv, max_rows_per_page=None, verbose=False):
         """Generate component table, optionally with pagination support
         Returns the number of pages created"""
         parts = self.split_parts(layer, index, n_comps)
@@ -382,12 +383,52 @@ class PickAndPlaceFile:
         table_x = 15 * mm  # Left margin
         table_y = page_height - 35 * mm  # Top position
         
+        # Calculate dynamic column widths based on content
+        color_width = 15 * mm  # Fixed width for color square
+        
+        # Find maximum content lengths for each column
+        max_value_len = 0
+        max_package_len = 0
+        max_refs_len = 0
+        
+        for group in parts:
+            # Value column (component value)
+            value_text = group[0].ref
+            max_value_len = max(max_value_len, len(value_text))
+            
+            # Package column
+            package_text = group[0].package
+            max_package_len = max(max_package_len, len(package_text))
+            
+            # Refs column (component references)
+            refs_text = " ".join(part.name for part in group)
+            max_refs_len = max(max_refs_len, len(refs_text))
+        
+        if verbose:
+            print(f"Table content analysis: max_value={max_value_len}, max_package={max_package_len}, max_refs={max_refs_len}")
+        
+        # Calculate column widths based on content (with min/max limits)
+        # Approximate 2mm per character + some padding
+        char_width = 2 * mm
+        min_col_width = 20 * mm
+        max_col_width = 120 * mm  # Increased max width for long package names
+        
+        value_width = max(min_col_width, min(max_col_width, max_value_len * char_width + 4 * mm))
+        package_width = max(min_col_width, min(max_col_width, max_package_len * char_width + 4 * mm))
+        
+        # Calculate remaining space for refs column
+        available_width = page_width - 30 * mm - color_width - value_width - package_width  # Total minus margins and other columns
+        refs_width = max(30 * mm, min(available_width * 0.8, max_refs_len * char_width + 4 * mm))  # Use 80% of available space max
+        
+        if verbose:
+            print(f"Column widths: color={color_width/mm:.1f}mm, value={value_width/mm:.1f}mm, package={package_width/mm:.1f}mm, refs={refs_width/mm:.1f}mm")
+        
         # Column definitions: x_position, width, header_text
         columns = [
-            (0 * mm, 15 * mm, "Color"),
-            (15 * mm, 40 * mm, "Lib.Reference"), 
-            (55 * mm, 40 * mm, "Comment"),
-            (95 * mm, 80 * mm, "Designators")
+            (0 * mm, color_width, "Color"),
+            (color_width, value_width, "Value"), 
+            (color_width + value_width, package_width, "Package"),
+            (color_width + value_width + package_width, refs_width, "Refs")
         ]
         
         table_width = sum(col[1] for col in columns)  # Total width
@@ -489,13 +530,19 @@ class PickAndPlaceFile:
             # Reset to black for text
             canv.setFillGray(0)
             
-            # Build designator string
-            dsgn = " ".join(part.name for part in group)
+            # Build designator string (component references)
+            refs = " ".join(part.name for part in group)
+            
+            # Calculate text truncation based on column widths (approximate 2mm per character)
+            char_width = 2 * mm
+            value_max_chars = max(1, int((columns[1][1] - 4 * mm) / char_width))
+            package_max_chars = max(1, int((columns[2][1] - 4 * mm) / char_width))
+            refs_max_chars = max(1, int((columns[3][1] - 4 * mm) / char_width))
             
             # Draw text in each column (skip color column)
-            canv.drawString(table_x + columns[1][0] + 2 * mm, text_y, group[0].ref[0:18])
-            canv.drawString(table_x + columns[2][0] + 2 * mm, text_y, group[0].desc[0:18])
-            canv.drawString(table_x + columns[3][0] + 2 * mm, text_y, dsgn[0:35])
+            canv.drawString(table_x + columns[1][0] + 2 * mm, text_y, group[0].ref[0:value_max_chars])  # Value
+            canv.drawString(table_x + columns[2][0] + 2 * mm, text_y, group[0].package[0:package_max_chars])  # Package
+            canv.drawString(table_x + columns[3][0] + 2 * mm, text_y, refs[0:refs_max_chars])  # Refs
 
 class PickAndPlaceFileKicad(PickAndPlaceFile):
     def __init__(self, fname, report_parser=None, verbose=False):
@@ -552,6 +599,7 @@ class PickAndPlaceFileKicad(PickAndPlaceFile):
 
                 # Parse component dimensions from package name if available
                 exact_dimensions = False  # Track if dimensions are exact
+                package_name = "Unknown"  # Default package name
                 if len(row) > 2:  # Check if Package column exists
                     try:
                         package_col_idx = header.index("Package")
@@ -586,7 +634,7 @@ class PickAndPlaceFileKicad(PickAndPlaceFile):
                 ref = row[i_desc]
                 if ref not in self.layers[layer]:
                     self.layers[layer][ref] = []
-                self.layers[layer][ref].append(PPComponent(cx, cy, w, h, row[i_dsg], row[i_desc], ref, rotation, exact_dimensions))
+                self.layers[layer][ref].append(PPComponent(cx, cy, w, h, row[i_dsg], row[i_desc], ref, rotation, exact_dimensions, package_name))
 
 class PickAndPlaceFileSeparate(PickAndPlaceFile):
     """Handle separate .pos files for top and bottom layers"""
@@ -684,7 +732,7 @@ class PickAndPlaceFileSeparate(PickAndPlaceFile):
                     
                     if val not in self.layers[layer]:
                         self.layers[layer][val] = []
-                    self.layers[layer][val].append(PPComponent(cx, cy, w, h, ref, val, val, rotation, exact_dimensions))
+                    self.layers[layer][val].append(PPComponent(cx, cy, w, h, ref, val, val, rotation, exact_dimensions, package))
                     
             except (ValueError, IndexError) as e:
                 print(f"Warning: Could not parse line in {filename}: {line}")
@@ -964,7 +1012,7 @@ def producePrintoutsForLayer(base_name, layer, canv, pf=None, verbose=False):
         # Page 1+: Complete component table (may span multiple pages)
         if verbose:
             print(f"Processing component table ({ngrp} component groups)")
-        table_pages = pf.gen_table(layer, 0, ngrp, canv)
+        table_pages = pf.gen_table(layer, 0, ngrp, canv, verbose=verbose)
         if verbose:
             print(f"Component table spans {table_pages} page(s)")
         canv.showPage()
@@ -1022,7 +1070,7 @@ def producePrintoutsForLayer(base_name, layer, canv, pf=None, verbose=False):
         canv.restoreState()
         
         # Generate component table
-        pf.gen_table(layer, page * 6, n_comps, canv)
+        pf.gen_table(layer, page * 6, n_comps, canv, verbose=verbose)
         canv.showPage()
 
 def main():
