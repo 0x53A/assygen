@@ -15,12 +15,136 @@ gerberMargin = 0.75 * 25.4 * mm  # 0.75 inch margin
 gerberScale = (1.0, 1.0)
 gerberOffset = (0.0, 0.0)
 
+def parse_component_dimensions(package_name):
+    """Parse component dimensions from KiCad footprint names
+    
+    Returns (width_mm, height_mm) based on package name.
+    Falls back to default size if parsing fails.
+    """
+    import re
+    
+    # Default fallback size
+    default_w, default_h = 2.0, 1.0  # 2mm x 1mm default
+    
+    try:
+        # Handle metric footprint names (most common)
+        # Examples: C_0603_1608Metric, R_0805_2012Metric, etc.
+        # The format is: _[imperial_size]_[metric_size]Metric
+        # Where metric_size is LLWW meaning L.L mm x W.W mm (Length x Width)
+        # For rectangular components, length is typically the longer dimension
+        metric_match = re.search(r'_\d{4}_(\d{4})Metric', package_name)
+        if metric_match:
+            # Extract metric dimensions (e.g., 1608 = 1.6mm x 0.8mm)
+            metric_code = metric_match.group(1)
+            # First two digits = length in 0.1mm, last two digits = width in 0.1mm  
+            length_mm = int(metric_code[:2]) / 10.0
+            width_mm = int(metric_code[2:]) / 10.0
+            # Return width first, then length (W x L instead of L x W)
+            # This matches the typical component orientation in pick-and-place
+            return (width_mm, length_mm)
+        
+        # Handle standard imperial sizes with metric conversion
+        # Examples: 0603, 0805, 1206, etc.
+        imperial_match = re.search(r'_?(\d{4})(?:[_\-]|$)', package_name)
+        if imperial_match:
+            size_code = imperial_match.group(1)
+            # Standard component size lookup table (imperial to metric)
+            size_map = {
+                '0201': (0.6, 0.3),   # 0201: 0.6mm x 0.3mm
+                '0402': (1.0, 0.5),   # 0402: 1.0mm x 0.5mm  
+                '0603': (1.6, 0.8),   # 0603: 1.6mm x 0.8mm
+                '0805': (2.0, 1.25),  # 0805: 2.0mm x 1.25mm
+                '1206': (3.2, 1.6),   # 1206: 3.2mm x 1.6mm
+                '1210': (3.2, 2.5),   # 1210: 3.2mm x 2.5mm
+                '2010': (5.0, 2.5),   # 2010: 5.0mm x 2.5mm
+                '2512': (6.35, 3.2),  # 2512: 6.35mm x 3.2mm
+            }
+            if size_code in size_map:
+                return size_map[size_code]
+        
+        # Handle special formats like CAPAE530X550N (5.3mm x 5.5mm)
+        cap_match = re.search(r'CAPAE(\d{3})X(\d{3})', package_name)
+        if cap_match:
+            w_mm = int(cap_match.group(1)) / 100.0
+            h_mm = int(cap_match.group(2)) / 100.0
+            return (w_mm, h_mm)
+        
+        # Handle SOT packages (TO packages)
+        if 'SOT' in package_name or 'TO-' in package_name:
+            if 'SOT-23' in package_name:
+                return (2.9, 1.3)  # SOT-23: 2.9mm x 1.3mm
+            elif 'SOT-89' in package_name:
+                return (4.5, 2.5)  # SOT-89: 4.5mm x 2.5mm
+            else:
+                return (3.0, 2.0)  # Generic SOT package
+        
+        # Handle QFP/QFN packages - extract from names like QFP-48_7x7mm
+        qfp_match = re.search(r'QF[PN]-\d+_(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)mm', package_name)
+        if qfp_match:
+            w_mm = float(qfp_match.group(1))
+            h_mm = float(qfp_match.group(2))
+            return (w_mm, h_mm)
+        
+        # Handle BGA packages - extract from names like BGA-256_17x17mm
+        bga_match = re.search(r'BGA-\d+_(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)mm', package_name)
+        if bga_match:
+            w_mm = float(bga_match.group(1))
+            h_mm = float(bga_match.group(2))
+            return (w_mm, h_mm)
+            
+        # Handle connector packages
+        if 'USB' in package_name.upper():
+            if 'MICRO' in package_name.upper():
+                return (5.0, 2.5)  # USB Micro: ~5mm x 2.5mm
+            else:
+                return (8.0, 4.0)  # Standard USB: ~8mm x 4mm
+        
+        if 'CONN' in package_name.upper():
+            return (5.0, 2.0)  # Generic connector
+            
+        # Handle LED packages
+        if 'LED' in package_name.upper():
+            if '0603' in package_name:
+                return (1.6, 0.8)  # 0603 LED
+            elif '0805' in package_name:
+                return (2.0, 1.25)  # 0805 LED
+            else:
+                return (3.0, 1.5)  # Generic LED
+        
+        # Handle crystal/oscillator packages
+        if any(x in package_name.upper() for x in ['CRYSTAL', 'OSC', 'XTAL']):
+            if '3225' in package_name:
+                return (3.2, 2.5)  # 3.2mm x 2.5mm crystal
+            elif '5032' in package_name:
+                return (5.0, 3.2)  # 5.0mm x 3.2mm crystal
+            else:
+                return (4.0, 2.5)  # Generic crystal
+        
+        # Handle inductor packages (similar to capacitors but often larger)
+        if 'IND' in package_name.upper() or 'L_' in package_name:
+            if '0603' in package_name:
+                return (1.6, 0.8)
+            elif '0805' in package_name:
+                return (2.0, 1.25)
+            elif '1206' in package_name:
+                return (3.2, 1.6)
+            else:
+                return (3.0, 3.0)  # Generic inductor (often square)
+    
+    except (ValueError, AttributeError):
+        pass
+    
+    # Return default if no pattern matches
+    return (default_w, default_h)
+
 class PPComponent:
-    def __init__(self, xc, yc, w, h, name, desc, ref):
+    def __init__(self, xc, yc, w, h, name, desc, ref, rotation=0.0):
         self.xc = xc
         self.yc = yc
         self.w = w
         self.h = h
+        self.rotation = rotation  # Store rotation for proper rendering
+        
         if self.w == 0:
             self.w = 0.8 * mm
         if self.h == 0:
@@ -46,11 +170,21 @@ class PickAndPlaceFile:
         parts = self.split_parts(layer, index, n_comps)
         n = 0
         for i in parts:
-            canv.setStrokeColor(self.col_map[n])
-            canv.setFillColor(self.col_map[n])
+            # Set colors with transparency (alpha = 0.6 for 60% opacity)
+            stroke_color = self.col_map[n]
+            fill_color = self.col_map[n]
+            
+            canv.setStrokeColorRGB(stroke_color.red, stroke_color.green, stroke_color.blue, alpha=0.8)
+            canv.setFillColorRGB(fill_color.red, fill_color.green, fill_color.blue, alpha=0.6)
             n = n + 1
             for j in i:
-                canv.rect(j.xc - j.w/2, j.yc - j.h/2, j.w, j.h, 1, 1)
+                # Draw rotated component rectangle
+                canv.saveState()
+                canv.translate(j.xc, j.yc)  # Move to component center
+                canv.rotate(j.rotation - 90)  # Apply rotation with 90° correction
+                # Draw rectangle centered at origin (after translation)
+                canv.rect(-j.w/2, -j.h/2, j.w, j.h, 1, 1)
+                canv.restoreState()
     
     def gen_table(self, layer, index, n_comps, canv):
         parts = self.split_parts(layer, index, n_comps)
@@ -163,6 +297,12 @@ class PickAndPlaceFileKicad(PickAndPlaceFile):
         i_cx = header.index("PosX")
         i_cy = header.index("PosY")
         i_layer = header.index("Side")
+        
+        # Try to find rotation column (optional)
+        try:
+            i_rot = header.index("Rot")
+        except ValueError:
+            i_rot = None
 
         self.layers = {}
         self.layers["Top"] = {}        
@@ -175,8 +315,30 @@ class PickAndPlaceFileKicad(PickAndPlaceFile):
                 cx = float(row[i_cx]) * mm
                 cy = float(row[i_cy]) * mm
 
-                w = 1 * mm
-                h = 1 * mm
+                # Get rotation if available
+                rotation = 0.0
+                if i_rot is not None and len(row) > i_rot:
+                    try:
+                        rotation = float(row[i_rot])
+                    except (ValueError, IndexError):
+                        rotation = 0.0
+
+                # Parse component dimensions from package name if available
+                if len(row) > 2:  # Check if Package column exists
+                    try:
+                        package_col_idx = header.index("Package")
+                        package_name = row[package_col_idx]
+                        w_mm, h_mm = parse_component_dimensions(package_name)
+                        w = w_mm * mm
+                        h = h_mm * mm
+                    except (ValueError, IndexError):
+                        # Fallback to default size if Package column missing or parsing fails
+                        w = 1 * mm
+                        h = 1 * mm
+                else:
+                    w = 1 * mm
+                    h = 1 * mm
+                    
                 l = row[i_layer]
                 if l == "F.Cu":
                     layer = "Top"
@@ -186,7 +348,7 @@ class PickAndPlaceFileKicad(PickAndPlaceFile):
                 ref = row[i_desc]
                 if ref not in self.layers[layer]:
                     self.layers[layer][ref] = []
-                self.layers[layer][ref].append(PPComponent(cx, cy, w, h, row[i_dsg], row[i_desc], ref))
+                self.layers[layer][ref].append(PPComponent(cx, cy, w, h, row[i_dsg], row[i_desc], ref, rotation))
 
 class PickAndPlaceFileSeparate(PickAndPlaceFile):
     """Handle separate .pos files for top and bottom layers"""
@@ -265,12 +427,15 @@ class PickAndPlaceFileSeparate(PickAndPlaceFile):
                     
                     cx = pos_x * mm
                     cy = pos_y * mm
-                    w = 1 * mm
-                    h = 1 * mm
+                    
+                    # Parse component dimensions from package name
+                    w_mm, h_mm = parse_component_dimensions(package)
+                    w = w_mm * mm
+                    h = h_mm * mm
                     
                     if val not in self.layers[layer]:
                         self.layers[layer][val] = []
-                    self.layers[layer][val].append(PPComponent(cx, cy, w, h, ref, val, val))
+                    self.layers[layer][val].append(PPComponent(cx, cy, w, h, ref, val, val, rotation))
                     
             except (ValueError, IndexError) as e:
                 print(f"Warning: Could not parse line in {filename}: {line}")
