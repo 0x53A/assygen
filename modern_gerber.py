@@ -365,6 +365,10 @@ class ModernGerberParser:
         self.current_macro_primitives = []
         self.current_macro_primitive_line = None  # For multi-line primitives
         
+        # State for parsing polygon regions (G36/G37)
+        self.in_region = False
+        self.region_path = []
+        
         # Regex patterns for Gerber commands
         self.patterns = {
             'format': re.compile(r'%FSLAX(\d)(\d)Y(\d)(\d)\*%'),
@@ -379,6 +383,8 @@ class ModernGerberParser:
             'arc_params': re.compile(r'I(-?\d+)J(-?\d+)'),
             'g_command': re.compile(r'G0*([123])\*?'),
             'g74_g75': re.compile(r'G(74|75)\*'),
+            'g36': re.compile(r'G36\*'),  # Start region (filled polygon)
+            'g37': re.compile(r'G37\*'),  # End region (filled polygon)
             'aperture_macro_start': re.compile(r'%AM([^*]+)\*$'),
             'aperture_macro_end': re.compile(r'%$'),
             'macro_primitive': re.compile(r'^(\d+),(.+)\*?$'),
@@ -482,6 +488,20 @@ class ModernGerberParser:
     
     def _process_line(self, line):
         """Process a single line of Gerber code"""
+        
+        # Check for region start (G36) - filled polygon - PRIORITY CHECK
+        if line == 'G36*':
+            self.in_region = True
+            self.region_path = []
+            return
+        
+        # Check for region end (G37) - filled polygon - PRIORITY CHECK
+        if line == 'G37*':
+            if self.in_region and len(self.region_path) > 2:
+                self._draw_filled_polygon(self.region_path)
+            self.in_region = False
+            self.region_path = []
+            return
         
         # Check for format specification
         match = self.patterns['format'].match(line)
@@ -823,6 +843,23 @@ class ModernGerberParser:
     
     def _execute_operation(self, x, y, operation):
         """Execute a drawing operation"""
+        
+        # If we're in a region (polygon), collect path points
+        if self.in_region:
+            if operation == 1:  # Move with draw - add line to region path
+                # Add line segment to region path
+                if not self.region_path:  # First point
+                    self.region_path.append((self.current_x, self.current_y))
+                self.region_path.append((x, y))
+            elif operation == 2:  # Move without draw - start new path segment
+                self.region_path.append((x, y))
+            # Update position and return - don't do normal drawing operations in regions
+            self.current_x = x
+            self.current_y = y
+            self.extents.update(x, y, self.current_aperture)
+            return
+        
+        # Normal operations (not in region)
         if operation == 1:  # Move (interpolate) - draw line or arc
             if self.canvas and self.current_aperture:
                 if self.interpolation_mode == 1:  # Linear interpolation
@@ -937,6 +974,41 @@ class ModernGerberParser:
         self.extents.update(x2, y2, self.current_aperture)
         self.extents.update(center_x - radius, center_y - radius, self.current_aperture)
         self.extents.update(center_x + radius, center_y + radius, self.current_aperture)
+    
+    def _draw_filled_polygon(self, path_points):
+        """Draw a filled polygon from the collected region path points"""
+        if not self.canvas or len(path_points) < 3:
+            return
+        
+        try:
+            # Set fill color to the foreground color (should be visible copper color)
+            self.canvas.setFillColor(self.fg_color)
+            self.canvas.setStrokeColor(self.fg_color)
+            
+            # Create path and draw polygon using path operations
+            path = self.canvas.beginPath()
+            
+            # Move to first point
+            first_point = path_points[0]
+            path.moveTo(first_point[0], first_point[1])
+            
+            # Add lines to all other points
+            for point in path_points[1:]:
+                path.lineTo(point[0], point[1])
+            
+            # Close the path
+            path.close()
+            
+            # Draw the filled polygon
+            self.canvas.drawPath(path, stroke=0, fill=1)
+            
+        except Exception as e:
+            if self.verbose:
+                print(f"Error drawing polygon: {e}")
+        
+        # Update extents with all polygon points
+        for x, y in path_points:
+            self.extents.update(x, y, None)
 
 # Global variables for compatibility with original code
 gerber_extents = [0, 0, 0, 0]
