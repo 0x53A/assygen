@@ -121,7 +121,6 @@ The project structure:
 - `main.py`: Entry point and argument handling
 - `assygen.py`: Core assembly drawing generation logic
 - `modern_gerber.py`: Modern Python 3 Gerber file parser
-- `gerber2pdf.py`: Legacy Gerber processor (kept for reference)
 
 ## Technical Details
 

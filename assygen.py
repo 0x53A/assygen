@@ -5,36 +5,15 @@ from reportlab.pdfgen import canvas
 from reportlab.lib import colors
 from reportlab.lib.units import mm
 from reportlab.lib.pagesizes import letter, landscape
-import csv
 import sys
 import os
+import tempfile
 
 # Global variables for gerber rendering
 gerberPageSize = letter
 gerberMargin = 0.75 * 25.4 * mm  # 0.75 inch margin
 gerberScale = (1.0, 1.0)
 gerberOffset = (0.0, 0.0)
-
-def determine_optimal_orientation_with_extents(base_name, verbose=False):
-    """Determine optimal PDF orientation based on PCB dimensions"""
-    if not gerber_extents or gerber_extents[0] == float('inf'):
-        # If no valid extents, default to portrait
-        print("No valid PCB extents found - using portrait orientation")
-        return letter
-    
-    # Calculate PCB dimensions
-    pcb_width = gerber_extents[2] - gerber_extents[0]  # max_x - min_x
-    pcb_height = gerber_extents[3] - gerber_extents[1]  # max_y - min_y
-    
-    print(f"PCB dimensions: {pcb_width:.2f} x {pcb_height:.2f} units")
-    
-    # If PCB is wider than tall, use landscape orientation
-    if pcb_width > pcb_height:
-        print("PCB is wider than tall - using landscape orientation")
-        return landscape(letter)
-    else:
-        print("PCB is taller than wide - using portrait orientation")
-        return letter
 
 class PPComponent:
     def __init__(self, xc, yc, w, h, name, desc, ref):
@@ -437,8 +416,6 @@ def renderGerber(base_name, layer, canv, verbose=False):
         extents = gm.ProcessFile(f_overlay)
     
     return extents if extents else (0, 0, 100, 100)
-    
-    return extents
 
 def producePrintoutsForLayer(base_name, layer, canv, pf=None, verbose=False):
     """Produce printouts for a specific layer with Gerber background"""

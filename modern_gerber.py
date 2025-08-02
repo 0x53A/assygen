@@ -6,6 +6,7 @@ Replaces the plex-based parser with a simpler regex-based approach
 
 import re
 import math
+import sys
 from reportlab.lib.units import mm, inch
 from reportlab.lib import colors
 
