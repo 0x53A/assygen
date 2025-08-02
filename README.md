@@ -2,6 +2,10 @@
 
 AssyGen is a tool for generating PDFs for PCB assembly.
 
+## Heritage
+
+This script is based on https://github.com/twlostow/assygen, found [here](https://forum.kicad.info/t/making-a-good-assembly-drawing-for-hand-soldering-out-of-the-kicad-pcbnew/2096/3).
+
 ## Installation
 
 This project uses `uv` for dependency management. 
