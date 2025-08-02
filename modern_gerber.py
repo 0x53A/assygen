@@ -11,12 +11,13 @@ from reportlab.lib import colors
 
 class GerberAperture:
     """Represents a Gerber aperture (tool definition)"""
-    def __init__(self, aperture_id, shape, params):
+    def __init__(self, aperture_id, shape, params, macro_name=None):
         self.id = aperture_id
-        self.shape = shape  # 'C' for circle, 'R' for rectangle, etc.
+        self.shape = shape  # 'C' for circle, 'R' for rectangle, 'MACRO' for macro
         self.params = params  # list of dimensions
+        self.macro_name = macro_name  # for macro apertures
         
-    def draw_flash(self, canvas, x, y):
+    def draw_flash(self, canvas, x, y, parser=None):
         """Draw this aperture as a flash at the given coordinates"""
         if self.shape == 'C':  # Circle
             radius = self.params[0] / 2
@@ -24,6 +25,130 @@ class GerberAperture:
         elif self.shape == 'R':  # Rectangle
             w, h = self.params[0], self.params[1]
             canvas.rect(x - w/2, y - h/2, w, h, stroke=0, fill=1)
+        elif self.shape == 'MACRO' and parser:  # Macro aperture
+            # Look up the macro definition and render it
+            if self.macro_name in parser.aperture_macros:
+                macro = parser.aperture_macros[self.macro_name]
+                macro.render(canvas, x, y, self.params)
+
+class MacroPrimitive:
+    """Represents a primitive within an aperture macro"""
+    def __init__(self, primitive_type, params):
+        self.type = primitive_type
+        self.params = params
+    
+    def render(self, canvas, x_offset, y_offset, macro_params):
+        """Render this primitive with given parameters"""
+        # Substitute macro parameters ($1, $2, etc.) with actual values
+        resolved_params = []
+        for param in self.params:
+            if isinstance(param, str):
+                # Handle expressions like '$1+$1', '$2', '270.000000'
+                resolved_value = self.evaluate_macro_expression(param, macro_params)
+                resolved_params.append(resolved_value)
+            else:
+                resolved_params.append(param)
+        
+        if self.type == 1:  # Circle
+            # Format: 1,exposure,diameter,x,y[,rotation]
+            if len(resolved_params) >= 4:
+                exposure = resolved_params[0]
+                diameter = resolved_params[1]
+                x = resolved_params[2] + x_offset
+                y = resolved_params[3] + y_offset
+                if exposure > 0:  # Only draw if exposure is positive
+                    radius = diameter / 2
+                    canvas.circle(x, y, radius, stroke=0, fill=1)
+        
+        elif self.type == 4:  # Outline/Polygon
+            # Format: 4,exposure,num_points,x1,y1,x2,y2,...,xn,yn[,rotation]
+            if len(resolved_params) >= 3:
+                exposure = resolved_params[0]
+                num_points = int(resolved_params[1])
+                if exposure > 0 and len(resolved_params) >= 2 + num_points * 2:
+                    # Extract coordinate pairs
+                    coords = []
+                    for i in range(num_points):
+                        x = resolved_params[2 + i * 2] + x_offset
+                        y = resolved_params[3 + i * 2] + y_offset
+                        coords.extend([x, y])
+                    
+                    # Draw polygon using reportlab
+                    if len(coords) >= 6:  # At least 3 points
+                        path = canvas.beginPath()
+                        path.moveTo(coords[0], coords[1])
+                        for i in range(2, len(coords), 2):
+                            path.lineTo(coords[i], coords[i+1])
+                        path.close()
+                        canvas.drawPath(path, stroke=0, fill=1)
+        
+        elif self.type == 20:  # Vector line/Rectangle
+            # Format: 20,exposure,width,start_x,start_y,end_x,end_y[,rotation]
+            if len(resolved_params) >= 6:
+                exposure = resolved_params[0]
+                width = resolved_params[1]
+                start_x = resolved_params[2] + x_offset
+                start_y = resolved_params[3] + y_offset
+                end_x = resolved_params[4] + x_offset
+                end_y = resolved_params[5] + y_offset
+                
+                if exposure > 0:
+                    # Draw as a rectangle between the two points
+                    canvas.setLineWidth(width)
+                    canvas.line(start_x, start_y, end_x, end_y)
+    
+    def evaluate_macro_expression(self, expr, macro_params):
+        """Evaluate a macro parameter expression like '$1+$1' or '270.000000'"""
+        if not isinstance(expr, str):
+            return float(expr)
+        
+        expr = expr.strip()
+        
+        # If it's just a number, return it
+        try:
+            return float(expr)
+        except ValueError:
+            pass
+        
+        # Handle expressions with $ parameters
+        result = expr
+        
+        # Replace $1, $2, etc. with actual parameter values
+        import re
+        def replace_param(match):
+            param_num = int(match.group(1))
+            if param_num <= len(macro_params):
+                return str(macro_params[param_num - 1])
+            else:
+                return '0'  # Default value for missing parameters
+        
+        result = re.sub(r'\$(\d+)', replace_param, result)
+        
+        # Now evaluate the mathematical expression
+        try:
+            # Simple evaluation - be careful about security
+            # Only allow basic math operations
+            allowed_chars = set('0123456789+-*/.() ')
+            if all(c in allowed_chars for c in result):
+                return float(eval(result))
+            else:
+                return 0.0
+        except:
+            return 0.0
+
+class ApertureMacro:
+    """Represents an aperture macro definition"""
+    def __init__(self, name):
+        self.name = name
+        self.primitives = []
+    
+    def add_primitive(self, primitive):
+        self.primitives.append(primitive)
+    
+    def render(self, canvas, x, y, params):
+        """Render this macro at the given position with parameters"""
+        for primitive in self.primitives:
+            primitive.render(canvas, x, y, params)
 
 class GerberExtents:
     """Track the extents of the Gerber drawing"""
@@ -39,10 +164,15 @@ class GerberExtents:
     def update(self, x, y, aperture=None):
         # Add some margin for aperture size
         margin = 0
-        if aperture and aperture.shape == 'C':
-            margin = aperture.params[0] / 2
-        elif aperture and aperture.shape == 'R':
-            margin = max(aperture.params[0], aperture.params[1]) / 2
+        if aperture:
+            if aperture.shape == 'C':
+                margin = aperture.params[0] / 2
+            elif aperture.shape == 'R':
+                margin = max(aperture.params[0], aperture.params[1]) / 2
+            elif aperture.shape == 'MACRO':
+                # For macro apertures, use a reasonable default margin
+                # Could be improved by analyzing the macro definition
+                margin = 1.0  # 1mm default margin for macro apertures
             
         self.xmin = min(self.xmin, x - margin)
         self.ymin = min(self.ymin, y - margin)
@@ -59,14 +189,15 @@ class ModernGerberParser:
         self.canvas = canvas
         self.verbose = verbose
         self.apertures = {}
+        self.aperture_macros = {}  # Store macro definitions
         self.current_aperture = None
         self.current_x = 0
         self.current_y = 0
         self.extents = GerberExtents()
         self.format_spec = {'x_digits': 4, 'y_digits': 4, 'decimal_places': 6}
         self.unit_scale = mm  # Default to mm
-        self.fg_color = colors.black
-        self.bg_color = colors.white
+        self.fg_color = colors.grey
+        self.bg_color = colors.lightgrey
         
         # Interpolation mode: 1=linear, 2=clockwise arc, 3=counterclockwise arc
         self.interpolation_mode = 1
@@ -79,11 +210,17 @@ class ModernGerberParser:
         self.unrecognized_commands = set()
         self.skipped_commands = set()
         
+        # State for parsing aperture macros
+        self.current_macro_name = None
+        self.current_macro_primitives = []
+        self.current_macro_primitive_line = None  # For multi-line primitives
+        
         # Regex patterns for Gerber commands
         self.patterns = {
             'format': re.compile(r'%FSLAX(\d)(\d)Y(\d)(\d)\*%'),
             'units': re.compile(r'%MO(MM|IN)\*%'),
             'aperture_def': re.compile(r'%ADD(\d+)([CR]),([0-9.X]+)\*%'),
+            'macro_aperture_def': re.compile(r'%ADD(\d+)([^,*]+),?([^*]*)\*%'),  # For macro apertures
             'aperture_select': re.compile(r'D(\d+)\*'),
             'coordinate': re.compile(r'X(-?\d+)Y(-?\d+)D(\d+)\*'),
             'coordinate_with_arc': re.compile(r'X(-?\d+)Y(-?\d+)I(-?\d+)J(-?\d+)D(\d+)\*'),
@@ -92,9 +229,10 @@ class ModernGerberParser:
             'arc_params': re.compile(r'I(-?\d+)J(-?\d+)'),
             'g_command': re.compile(r'G0*([123])\*?'),
             'g74_g75': re.compile(r'G(74|75)\*'),
-            'aperture_macro': re.compile(r'%AM([^*]+)\*%'),
-            'macro_primitive': re.compile(r'^(\d+),'),
-            'macro_comment': re.compile(r'^0 .*\*$'),  # Aperture macro comment primitive
+            'aperture_macro_start': re.compile(r'%AM([^*]+)\*$'),
+            'aperture_macro_end': re.compile(r'%$'),
+            'macro_primitive': re.compile(r'^(\d+),(.+)\*?$'),
+            'macro_comment': re.compile(r'^0 .*\*?$'),  # Aperture macro comment primitive
             'attribute': re.compile(r'%(TA|TO|TF|TD)([^*]*)\*%'),
             'layer_polarity': re.compile(r'%LP([CD])\*%'),
             'comment': re.compile(r'G04.*\*'),
@@ -108,6 +246,29 @@ class ModernGerberParser:
         if self.canvas:
             self.canvas.setFillColor(fg_color)
             self.canvas.setStrokeColor(fg_color)
+    
+    def parse_macro_expression(self, expr_str):
+        """Parse a macro parameter expression like '$1+$1' or '270.000000'"""
+        # For now, keep expressions as strings - they'll be resolved when the macro is used
+        return expr_str.strip()
+    
+    def parse_macro_parameters(self, params_str):
+        """Parse comma-separated macro parameters"""
+        if not params_str:
+            return []
+        
+        params = []
+        # Split by commas but handle expressions
+        parts = params_str.split(',')
+        for part in parts:
+            part = part.strip()
+            try:
+                # Try to parse as float first
+                params.append(float(part))
+            except ValueError:
+                # Otherwise keep as string (could be an expression like '$1+$1')
+                params.append(part)
+        return params
     
     def parse_coordinate(self, coord_str):
         """Parse coordinate string according to format specification"""
@@ -207,66 +368,188 @@ class ModernGerberParser:
             self.apertures[aperture_id] = GerberAperture(aperture_id, shape, params)
             return
         
-        # Check for custom aperture definitions (RoundRect, etc.)
-        if line.startswith('%ADD') and ('RoundRect' in line or 'FreePoly' in line):
-            # Extract aperture ID
-            import re
-            match = re.match(r'%ADD(\d+)([^,]+),([^*]+)\*%', line)
+        # Check for custom aperture definitions (RoundRect, etc.) - but first check if it's a macro aperture
+        if line.startswith('%ADD'):
+            # Try macro aperture definition first
+            match = self.patterns['macro_aperture_def'].match(line)
             if match:
                 aperture_id = int(match.group(1))
-                shape_name = match.group(2)
-                params_str = match.group(3)
+                macro_name = match.group(2)
+                params_str = match.group(3) if match.group(3) else ""
                 
-                if 'RoundRect' in shape_name:
-                    # Parse RoundRect parameters: rounding_radius,x1,y1,x2,y2,x3,y3,x4,y4
-                    try:
-                        params = [float(x) * self.unit_scale for x in params_str.split('X')]
-                        if len(params) >= 9:  # rounding radius + 4 corner coordinates
-                            # Use the coordinate extent to determine size
-                            x_coords = params[1::2]  # x coordinates
-                            y_coords = params[2::2]  # y coordinates
-                            width = max(x_coords) - min(x_coords)
-                            height = max(y_coords) - min(y_coords)
-                            # Create rectangular aperture as approximation
-                            self.apertures[aperture_id] = GerberAperture(aperture_id, 'R', [width, height])
-                            # This is handled (approximated), so don't mark as skipped
-                        else:
-                            # Fallback to small circle - handled but approximate
+                # Check if this references a known macro
+                if macro_name in self.aperture_macros:
+                    # Parse macro parameters - split by X and convert to float
+                    params = []
+                    if params_str:
+                        # Split by X (common in macro parameters)
+                        param_parts = params_str.split('X')
+                        for part in param_parts:
+                            try:
+                                params.append(float(part) * self.unit_scale)
+                            except ValueError:
+                                pass
+                    self.apertures[aperture_id] = GerberAperture(aperture_id, 'MACRO', params, macro_name)
+                    return
+                
+                # Handle custom apertures (RoundRect, FreePoly, etc.)
+                if 'RoundRect' in macro_name or 'FreePoly' in macro_name:
+                    # Create fallback approximation as before
+                    if 'RoundRect' in macro_name:
+                        try:
+                            params = self.parse_macro_parameters(params_str)
+                            if len(params) >= 9:  # rounding radius + 4 corner coordinates
+                                # Use the coordinate extent to determine size
+                                x_coords = params[1::2]  # x coordinates
+                                y_coords = params[2::2]  # y coordinates
+                                width = max(x_coords) - min(x_coords)
+                                height = max(y_coords) - min(y_coords)
+                                # Create rectangular aperture as approximation
+                                self.apertures[aperture_id] = GerberAperture(aperture_id, 'R', [width, height])
+                            else:
+                                # Fallback to small circle
+                                default_size = 0.1 * self.unit_scale
+                                self.apertures[aperture_id] = GerberAperture(aperture_id, 'C', [default_size])
+                        except (ValueError, IndexError):
                             default_size = 0.1 * self.unit_scale
                             self.apertures[aperture_id] = GerberAperture(aperture_id, 'C', [default_size])
-                    except (ValueError, IndexError):
-                        # Fallback to small circle if parsing fails - handled but approximate
-                        default_size = 0.1 * self.unit_scale
-                        self.apertures[aperture_id] = GerberAperture(aperture_id, 'C', [default_size])
-                else:
-                    # For FreePoly and other custom apertures, create aperture with fallback
-                    # Parse the parameter (usually the rotation angle)
-                    try:
-                        param = float(params_str) * self.unit_scale if params_str else 0.1 * self.unit_scale
-                        # Use the parameter as a size hint if it seems reasonable, otherwise use default
-                        if param > 0 and param < 10:  # Reasonable size range
-                            default_size = param
-                        else:
+                    else:
+                        # For FreePoly and other custom apertures, create aperture with fallback
+                        try:
+                            params = self.parse_macro_parameters(params_str)
+                            if params and isinstance(params[0], (int, float)) and params[0] > 0:
+                                default_size = params[0] * self.unit_scale
+                            else:
+                                default_size = 0.1 * self.unit_scale
+                        except (ValueError, IndexError):
                             default_size = 0.1 * self.unit_scale
-                    except (ValueError, IndexError):
-                        default_size = 0.1 * self.unit_scale
+                        
+                        self.apertures[aperture_id] = GerberAperture(aperture_id, 'C', [default_size])
+                    return
+            
+            # If we get here, it might be a standard aperture definition that the macro pattern caught
+            # Fall through to standard aperture definition handling
+        
+        # Check for aperture macro start
+        match = self.patterns['aperture_macro_start'].match(line)
+        if match:
+            # Start of aperture macro definition
+            self.current_macro_name = match.group(1)
+            self.current_macro_primitives = []
+            self.current_macro_primitive_line = None
+            return
+        
+        # Check for aperture macro end
+        if line.strip() == '%' and self.current_macro_name:
+            # End of aperture macro definition
+            macro = ApertureMacro(self.current_macro_name)
+            for primitive in self.current_macro_primitives:
+                macro.add_primitive(primitive)
+            self.aperture_macros[self.current_macro_name] = macro
+            self.current_macro_name = None
+            self.current_macro_primitives = []
+            return
+        
+        # Check if we're currently parsing a macro
+        if self.current_macro_name:
+            # Check for macro comment primitives (primitive 0)
+            match = self.patterns['macro_comment'].match(line)
+            if match:
+                # These are just comments within aperture macros - ignore silently
+                return
+            
+            # Check if we're continuing a multi-line primitive
+            if self.current_macro_primitive_line is not None:
+                # Append this line to the current primitive
+                self.current_macro_primitive_line += line
+                
+                # Check if this line ends the primitive (ends with % or *%)
+                if line.endswith('*%') or line.strip() == '%':
+                    # Process the complete primitive
+                    primitive_line = self.current_macro_primitive_line
+                    self.current_macro_primitive_line = None
                     
-                    self.apertures[aperture_id] = GerberAperture(aperture_id, 'C', [default_size])
-                    # These are handled (with fallback approximation), don't mark as skipped
-            return
-        
-        # Check for aperture macros
-        match = self.patterns['aperture_macro'].match(line)
-        if match:
-            # Skip aperture macro definitions - these are complex custom shapes we can't fully render
-            # But don't mark as "skipped" since they're legitimate Gerber extended commands
-            # The actual limitation is in our shape rendering capability, not command recognition
-            return
-        
-        # Check for aperture macro comment primitives (primitive 0)
-        match = self.patterns['macro_comment'].match(line)
-        if match:
-            # These are just comments within aperture macros - ignore silently
+                    # Parse the complete primitive
+                    match = self.patterns['macro_primitive'].match(primitive_line)
+                    if match:
+                        primitive_type = int(match.group(1))
+                        params_str = match.group(2)
+                        
+                        # Check if this line ends the macro (ends with %)
+                        if params_str.endswith('%'):
+                            # Remove the % and process the primitive
+                            params_str = params_str[:-1]
+                            # Parse the parameters
+                            params = self.parse_macro_parameters(params_str)
+                            primitive = MacroPrimitive(primitive_type, params)
+                            self.current_macro_primitives.append(primitive)
+                            
+                            # End the macro
+                            macro = ApertureMacro(self.current_macro_name)
+                            for p in self.current_macro_primitives:
+                                macro.add_primitive(p)
+                            self.aperture_macros[self.current_macro_name] = macro
+                            self.current_macro_name = None
+                            self.current_macro_primitives = []
+                            return
+                        else:
+                            # Parse the parameters
+                            params = self.parse_macro_parameters(params_str)
+                            primitive = MacroPrimitive(primitive_type, params)
+                            self.current_macro_primitives.append(primitive)
+                            return
+                return
+            
+            # Check for macro primitives
+            match = self.patterns['macro_primitive'].match(line)
+            if match:
+                primitive_type = int(match.group(1))
+                params_str = match.group(2)
+                
+                # Check if this line ends the macro (ends with %)
+                if params_str.endswith('%'):
+                    # Remove the % and process the primitive
+                    params_str = params_str[:-1]
+                    # Parse the parameters
+                    params = self.parse_macro_parameters(params_str)
+                    primitive = MacroPrimitive(primitive_type, params)
+                    self.current_macro_primitives.append(primitive)
+                    
+                    # End the macro
+                    macro = ApertureMacro(self.current_macro_name)
+                    for p in self.current_macro_primitives:
+                        macro.add_primitive(p)
+                    self.aperture_macros[self.current_macro_name] = macro
+                    self.current_macro_name = None
+                    self.current_macro_primitives = []
+                    return
+                else:
+                    # Check if this line ends with *
+                    if line.endswith('*'):
+                        # Single-line primitive
+                        params = self.parse_macro_parameters(params_str)
+                        primitive = MacroPrimitive(primitive_type, params)
+                        self.current_macro_primitives.append(primitive)
+                        return
+                    else:
+                        # Multi-line primitive - start accumulating
+                        self.current_macro_primitive_line = line
+                        return
+            
+            # Check for standalone macro end
+            if line.strip() == '%':
+                # End the macro
+                macro = ApertureMacro(self.current_macro_name)
+                for p in self.current_macro_primitives:
+                    macro.add_primitive(p)
+                self.aperture_macros[self.current_macro_name] = macro
+                self.current_macro_name = None
+                self.current_macro_primitives = []
+                self.current_macro_primitive_line = None
+                return
+            
+            # Any other line inside a macro might be a continuation line
+            # If we don't have a current primitive line, this might be a malformed macro
             return
         
         # Check for attributes and metadata
@@ -403,7 +686,7 @@ class ModernGerberParser:
         
         elif operation == 3:  # Flash (place aperture)
             if self.canvas and self.current_aperture:
-                self.current_aperture.draw_flash(self.canvas, x, y)
+                self.current_aperture.draw_flash(self.canvas, x, y, self)
             self.extents.update(x, y, self.current_aperture)
         
         # Update current position
