@@ -4,7 +4,7 @@ from modern_gerber import GerberMachine, ResetExtents, gerber_extents, DrillFile
 from reportlab.pdfgen import canvas
 from reportlab.lib import colors
 from reportlab.lib.units import mm
-from reportlab.lib.pagesizes import letter, landscape
+from reportlab.lib.pagesizes import A4, landscape
 import sys
 import os
 import tempfile
@@ -160,7 +160,7 @@ class KiCadReportParser:
         return self.components.get(ref, None)
 
 # Global variables for gerber rendering
-gerberPageSize = letter
+gerberPageSize = A4
 gerberMargin = 0.75 * 25.4 * mm  # 0.75 inch margin
 gerberScale = (1.0, 1.0)
 gerberOffset = (0.0, 0.0)
@@ -876,12 +876,12 @@ def get_pcb_extents(base_name, verbose=False):
 
 def determine_optimal_orientation(pcb_extents, verbose=False):
     """Determine optimal page orientation based on PCB dimensions"""
-    from reportlab.lib.pagesizes import letter, landscape
+    from reportlab.lib.pagesizes import A4, landscape
     
     if not pcb_extents:
         if verbose:
             print("Warning: Could not determine PCB extents, using default orientation")
-        return letter
+        return A4
     
     min_x, min_y, max_x, max_y = pcb_extents
     pcb_width = max_x - min_x
@@ -894,11 +894,11 @@ def determine_optimal_orientation(pcb_extents, verbose=False):
     if pcb_width > pcb_height:
         if verbose:
             print("Using landscape orientation for wide PCB")
-        return landscape(letter)
+        return landscape(A4)
     else:
         if verbose:
             print("Using portrait orientation for tall/square PCB") 
-        return letter
+        return A4
 
 def renderGerber(base_name, layer, canv, verbose=False):
     """Render Gerber files as background layers"""
