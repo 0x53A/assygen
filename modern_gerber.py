@@ -183,6 +183,155 @@ class GerberExtents:
     def get_bounds(self):
         return (self.xmin, self.ymin, self.xmax, self.ymax)
 
+class DrillTool:
+    """Represents a drill tool definition"""
+    def __init__(self, tool_number, diameter):
+        self.number = tool_number
+        self.diameter = diameter  # in current units
+        
+    def drill_hole(self, canvas, x, y):
+        """Draw a drill hole at the given coordinates"""
+        # Draw hole as white circle with thin black outline
+        canvas.setFillColorRGB(1, 1, 1)  # White fill
+        canvas.setStrokeColorRGB(0, 0, 0)  # Black outline
+        canvas.setLineWidth(0.1)
+        radius = self.diameter / 2
+        canvas.circle(x, y, radius, stroke=1, fill=1)
+
+class DrillFileParser:
+    """Parser for Excellon drill files (.drl)"""
+    
+    def __init__(self, canvas=None, verbose=False):
+        self.canvas = canvas
+        self.verbose = verbose
+        self.tools = {}
+        self.current_tool = None
+        self.extents = GerberExtents()
+        self.unit_scale = inch  # Default to inches for drill files
+        self.holes = []  # Store all holes for rendering
+        
+        # Regex patterns for drill commands
+        self.patterns = {
+            'tool_def': re.compile(r'T(\d+)C([0-9.]+)'),
+            'tool_select': re.compile(r'^T(\d+)$'),
+            'coordinate': re.compile(r'X([+-]?[0-9.]+)Y([+-]?[0-9.]+)'),
+            'units': re.compile(r'^(INCH|METRIC)$'),
+            'format': re.compile(r'FORMAT=\{.*\}'),
+            'header_start': re.compile(r'^M48$'),
+            'header_end': re.compile(r'^%$'),
+            'program_end': re.compile(r'^M30$'),
+            'comment': re.compile(r'^;.*'),
+            'attribute': re.compile(r'^; #@!.*'),
+        }
+    
+    def process_file(self, filename):
+        """Process a drill file"""
+        print(f"Processing drill file: {filename}")
+        
+        try:
+            with open(filename, 'r') as f:
+                content = f.read()
+        except FileNotFoundError:
+            print(f"Warning: Drill file {filename} not found - skipping")
+            return self.extents.get_bounds()
+        except Exception as e:
+            print(f"Error reading {filename}: {e}")
+            return self.extents.get_bounds()
+        
+        lines = content.split('\n')
+        in_header = False
+        
+        for line_num, line in enumerate(lines, 1):
+            line = line.strip()
+            if not line:
+                continue
+                
+            try:
+                self._process_line(line, in_header)
+                
+                # Track header state
+                if self.patterns['header_start'].match(line):
+                    in_header = True
+                elif self.patterns['header_end'].match(line):
+                    in_header = False
+                elif self.patterns['program_end'].match(line):
+                    break
+                    
+            except Exception as e:
+                print(f"Error processing drill line {line_num}: {line}")
+                print(f"Error: {e}")
+                continue
+        
+        bounds = self.extents.get_bounds()
+        print(f"Drill extents: ({bounds[0]:.2f}, {bounds[1]:.2f}) to ({bounds[2]:.2f}, {bounds[3]:.2f})")
+        print(f"Total holes drilled: {len(self.holes)}")
+        
+        return bounds
+    
+    def _process_line(self, line, in_header):
+        """Process a single line of drill code"""
+        
+        # Skip comments and attributes
+        if self.patterns['comment'].match(line) or self.patterns['attribute'].match(line):
+            return
+        
+        # Check for units
+        match = self.patterns['units'].match(line)
+        if match:
+            if match.group(1) == 'INCH':
+                self.unit_scale = inch
+            elif match.group(1) == 'METRIC':
+                self.unit_scale = mm
+            return
+        
+        # Check for tool definition
+        match = self.patterns['tool_def'].match(line)
+        if match:
+            tool_number = int(match.group(1))
+            diameter = float(match.group(2)) * self.unit_scale
+            self.tools[tool_number] = DrillTool(tool_number, diameter)
+            if self.verbose:
+                print(f"  Tool T{tool_number}: {diameter/self.unit_scale:.4f} {('inches' if self.unit_scale == inch else 'mm')}")
+            return
+        
+        # Check for tool selection
+        match = self.patterns['tool_select'].match(line)
+        if match:
+            tool_number = int(match.group(1))
+            self.current_tool = self.tools.get(tool_number)
+            return
+        
+        # Check for coordinate (drill command)
+        match = self.patterns['coordinate'].match(line)
+        if match and self.current_tool:
+            x = float(match.group(1)) * self.unit_scale
+            y = float(match.group(2)) * self.unit_scale
+            
+            # Store hole for rendering
+            self.holes.append((x, y, self.current_tool))
+            
+            # Update extents
+            margin = self.current_tool.diameter / 2
+            self.extents.xmin = min(self.extents.xmin, x - margin)
+            self.extents.ymin = min(self.extents.ymin, y - margin)
+            self.extents.xmax = max(self.extents.xmax, x + margin)
+            self.extents.ymax = max(self.extents.ymax, y + margin)
+            
+            return
+        
+        # Ignore other commands (FMAT, G90, G05, etc.)
+        if line in ['FMAT,2', 'G90', 'G05'] or self.patterns['format'].match(line) or \
+           self.patterns['header_start'].match(line) or self.patterns['header_end'].match(line):
+            return
+    
+    def render_holes(self):
+        """Render all drill holes"""
+        if not self.canvas:
+            return
+            
+        for x, y, tool in self.holes:
+            tool.drill_hole(self.canvas, x, y)
+
 class ModernGerberParser:
     """Modern Gerber parser using regex instead of plex"""
     

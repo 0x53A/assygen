@@ -171,6 +171,37 @@ def main():
         print("  File → Fabrication Outputs → Gerbers (.gbr)")
         sys.exit(1)
     
+    # Check for drill files
+    drill_candidates = [
+        (full_base_path + "-PTH.drl", "Plated through holes"),
+        (full_base_path + "-NPTH.drl", "Non-plated through holes"),
+        (full_base_path + ".drl", "Combined drill file"),
+    ]
+    
+    found_drill = []
+    missing_drill = []
+    
+    for file_path, description in drill_candidates:
+        if os.path.exists(file_path):
+            found_drill.append((file_path, description))
+        else:
+            missing_drill.append((file_path, description))
+    
+    if found_drill:
+        print("Found drill files:")
+        for file_path, description in found_drill:
+            print(f"  + {os.path.basename(file_path)} ({description})")
+    
+    if missing_drill:
+        print("Missing drill files:")
+        for file_path, description in missing_drill:
+            print(f"  - {os.path.basename(file_path)} ({description})")
+    
+    if not found_drill:
+        print("Warning: No drill files found - assembly drawings will not show drilled holes")
+        print("To include drill holes, export drill files from KiCad:")
+        print("  File → Fabrication Outputs → Drill Files (.drl)")
+    
     # Change to the target directory so assygen can find the files
     original_dir = os.getcwd()
     try:

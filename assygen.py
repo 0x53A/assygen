@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-from modern_gerber import GerberMachine, ResetExtents, gerber_extents
+from modern_gerber import GerberMachine, ResetExtents, gerber_extents, DrillFileParser
 from reportlab.pdfgen import canvas
 from reportlab.lib import colors
 from reportlab.lib.units import mm
@@ -313,6 +313,28 @@ def find_gerber_files(base_name, layer):
     
     return copper_file, overlay_file
 
+def find_drill_files(base_name):
+    """Find drill files using KiCad naming conventions"""
+    import os
+    
+    # Check for newer KiCad format with separate PTH/NPTH files
+    pth_file = base_name + "-PTH.drl"    # Plated Through Holes
+    npth_file = base_name + "-NPTH.drl"  # Non-Plated Through Holes
+    
+    # Check for older single drill file format
+    single_drill = base_name + ".drl"
+    
+    drill_files = []
+    
+    if os.path.exists(pth_file):
+        drill_files.append(pth_file)
+    if os.path.exists(npth_file):
+        drill_files.append(npth_file)
+    if os.path.exists(single_drill) and not drill_files:  # Only use single file if no PTH/NPTH files
+        drill_files.append(single_drill)
+    
+    return drill_files
+
 def get_pcb_extents(base_name, verbose=False):
     """Get PCB extents from Gerber files without rendering"""
     # Try both Top and Bottom layers to get overall PCB dimensions
@@ -352,6 +374,26 @@ def get_pcb_extents(base_name, verbose=False):
                 ctmp.save()
             finally:
                 # Clean up temp file
+                try:
+                    os.unlink(temp_name)
+                except:
+                    pass
+    
+    # Also check drill files for extents
+    drill_files = find_drill_files(base_name)
+    if drill_files:
+        for drill_file in drill_files:
+            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_file:
+                temp_name = tmp_file.name
+            
+            try:
+                ctmp = temp_canvas.Canvas(temp_name)
+                drill_parser = DrillFileParser(ctmp, verbose=verbose)
+                extents = drill_parser.process_file(drill_file)
+                if extents and extents[0] != float('inf'):
+                    all_extents.append(extents)
+                ctmp.save()
+            finally:
                 try:
                     os.unlink(temp_name)
                 except:
@@ -414,6 +456,14 @@ def renderGerber(base_name, layer, canv, verbose=False):
     if f_overlay:
         gm.setColors(colors.Color(0.5, 0.5, 0.5), colors.Color(0, 0, 0))
         extents = gm.ProcessFile(f_overlay)
+    
+    # Render drill holes (white holes with black outlines)
+    drill_files = find_drill_files(base_name)
+    if drill_files:
+        for drill_file in drill_files:
+            drill_parser = DrillFileParser(canv, verbose=verbose)
+            drill_parser.process_file(drill_file)
+            drill_parser.render_holes()
     
     return extents if extents else (0, 0, 100, 100)
 
