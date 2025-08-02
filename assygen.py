@@ -8,6 +8,155 @@ from reportlab.lib.pagesizes import letter, landscape
 import sys
 import os
 import tempfile
+import re
+
+class KiCadReportParser:
+    """Parser for KiCad footprint report files (.rpt)
+    
+    Extracts exact component dimensions and footprint data from KiCad reports
+    instead of guessing from footprint names.
+    """
+    
+    def __init__(self):
+        self.components = {}  # ref -> component data
+        
+    def parse_report_file(self, rpt_file_path):
+        """Parse a KiCad .rpt file and extract component data"""
+        try:
+            with open(rpt_file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except (FileNotFoundError, UnicodeDecodeError) as e:
+            print(f"Warning: Could not read report file {rpt_file_path}: {e}")
+            return
+        
+        # Split into modules
+        modules = re.split(r'\$MODULE\s+(\w+)', content)[1:]  # Skip header
+        
+        # Process modules in pairs (ref, content)
+        for i in range(0, len(modules), 2):
+            if i + 1 < len(modules):
+                ref = modules[i].strip()
+                module_content = modules[i + 1]
+                component_data = self._parse_module(ref, module_content)
+                if component_data:
+                    self.components[ref] = component_data
+        
+        print(f"Parsed {len(self.components)} components from report file")
+    
+    def _parse_module(self, ref, content):
+        """Parse a single module section"""
+        lines = content.split('\n')
+        component_data = {
+            'ref': ref,
+            'footprint': '',
+            'position': (0, 0),
+            'orientation': 0,
+            'layer': 'front',
+            'pads': [],
+            'bbox': (0, 0)  # width, height in mm
+        }
+        
+        for line in lines:
+            line = line.strip()
+            
+            # Parse footprint name
+            if line.startswith('footprint '):
+                component_data['footprint'] = line[10:].strip()
+            
+            # Parse component position and orientation
+            elif line.startswith('position '):
+                parts = line.split()
+                try:
+                    x = float(parts[1])
+                    y = float(parts[2])
+                    component_data['position'] = (x, y)
+                    if 'orientation' in line:
+                        orientation = float(parts[4])
+                        component_data['orientation'] = orientation
+                except (IndexError, ValueError):
+                    pass
+            
+            # Parse layer
+            elif line.startswith('layer '):
+                component_data['layer'] = line[6:].strip()
+            
+            # Parse pad information  
+            elif line.startswith('position ') and 'size' in line:
+                # This is a pad position line with size info (not the component position which has 'orientation')
+                # Format: position -0.775000  0.000000  size  0.900000  0.950000  orientation 0.00
+                parts = line.split()
+                try:
+                    # parts[0] = 'position', parts[1] = x, parts[2] = y, parts[3] = 'size', parts[4] = w, parts[5] = h
+                    pad_x = float(parts[1])
+                    pad_y = float(parts[2])
+                    size_idx = parts.index('size')
+                    pad_w = float(parts[size_idx + 1])
+                    pad_h = float(parts[size_idx + 2])
+                    
+                    component_data['pads'].append({
+                        'position': (pad_x, pad_y),
+                        'size': (pad_w, pad_h)
+                    })
+                except (IndexError, ValueError) as e:
+                    pass
+        
+        # Calculate component bounding box from pads
+        if component_data['pads']:
+            component_data['bbox'] = self._calculate_bbox(component_data['pads'])
+        
+        return component_data
+    
+    def _calculate_bbox(self, pads):
+        """Calculate component bounding box from pad positions and sizes"""
+        if not pads:
+            return (2.0, 1.0)  # Default size
+        
+        min_x = min_y = float('inf')
+        max_x = max_y = float('-inf')
+        
+        for pad in pads:
+            pad_x, pad_y = pad['position']
+            pad_w, pad_h = pad['size']
+            
+            # Calculate pad extents
+            left = pad_x - pad_w / 2
+            right = pad_x + pad_w / 2
+            bottom = pad_y - pad_h / 2
+            top = pad_y + pad_h / 2
+            
+            min_x = min(min_x, left)
+            max_x = max(max_x, right)
+            min_y = min(min_y, bottom)
+            max_y = max(max_y, top)
+        
+        pad_width = max_x - min_x
+        pad_height = max_y - min_y
+        
+        # Estimate component body size from pad layout
+        # For 2-pad components (resistors, capacitors), body is typically larger than pad span
+        if len(pads) == 2:
+            # Component body is typically 1.2-1.5x the pad span for standard SMD components
+            body_width = max(pad_width * 1.3, pad_width + 0.4)  # At least 0.4mm larger than pads
+            body_height = max(pad_height * 1.5, pad_height + 0.6)  # At least 0.6mm larger than pads
+        else:
+            # Multi-pad components: use pad envelope with reasonable margin
+            body_width = pad_width + 0.5   # 0.5mm margin beyond pads
+            body_height = pad_height + 0.5  # 0.5mm margin beyond pads
+        
+        return (body_width, body_height)
+    
+    def get_component_dimensions(self, ref):
+        """Get component dimensions for a reference designator"""
+        if ref in self.components:
+            bbox = self.components[ref]['bbox']
+            return bbox, True  # Return dimensions and exact=True
+        else:
+            # Fallback to default size if not found in report
+            return (2.0, 1.0), False  # Return dimensions and exact=False
+    
+    def get_component_data(self, ref):
+        """Get full component data for a reference designator"""
+        return self.components.get(ref, None)
 
 # Global variables for gerber rendering
 gerberPageSize = letter
@@ -138,12 +287,13 @@ def parse_component_dimensions(package_name):
     return (default_w, default_h)
 
 class PPComponent:
-    def __init__(self, xc, yc, w, h, name, desc, ref, rotation=0.0):
+    def __init__(self, xc, yc, w, h, name, desc, ref, rotation=0.0, exact_dimensions=False):
         self.xc = xc
         self.yc = yc
         self.w = w
         self.h = h
         self.rotation = rotation  # Store rotation for proper rendering
+        self.exact_dimensions = exact_dimensions  # Flag to indicate if dimensions are from KiCad report
         
         if self.w == 0:
             self.w = 0.8 * mm
@@ -169,22 +319,54 @@ class PickAndPlaceFile:
     def draw(self, layer, index, n_comps, canv):
         parts = self.split_parts(layer, index, n_comps)
         n = 0
+        exact_count = 0
+        cross_count = 0
+        
         for i in parts:
             # Set colors with transparency (alpha = 0.6 for 60% opacity)
-            stroke_color = self.col_map[n]
-            fill_color = self.col_map[n]
+            # Use modulo to wrap around when there are more component groups than colors
+            color_index = n % len(self.col_map)
+            stroke_color = self.col_map[color_index]
+            fill_color = self.col_map[color_index]
             
             canv.setStrokeColorRGB(stroke_color.red, stroke_color.green, stroke_color.blue, alpha=0.8)
             canv.setFillColorRGB(fill_color.red, fill_color.green, fill_color.blue, alpha=0.6)
             n = n + 1
             for j in i:
-                # Draw rotated component rectangle
+                # Draw rotated component
                 canv.saveState()
                 canv.translate(j.xc, j.yc)  # Move to component center
                 canv.rotate(j.rotation - 90)  # Apply rotation with 90° correction
-                # Draw rectangle centered at origin (after translation)
-                canv.rect(-j.w/2, -j.h/2, j.w, j.h, 1, 1)
+                
+                if j.exact_dimensions:
+                    # Draw rectangle for components with exact dimensions
+                    canv.rect(-j.w/2, -j.h/2, j.w, j.h, 1, 1)
+                    exact_count += 1
+                else:
+                    # Draw X for components with estimated dimensions
+                    cross_size = max(j.w, j.h) / 4  # Half the size (divide by 4 instead of 2)
+                    # Apply sanity check: min 1mm, max 4mm (creates 2x2mm to 8x8mm crosses)
+                    cross_size = max(1.0, min(4.0, cross_size))
+                    # Track cross sizes for summary
+                    if not hasattr(self, 'cross_sizes'):
+                        self.cross_sizes = []
+                    self.cross_sizes.append(cross_size)
+                    canv.setLineWidth(0.5)  # Keep bold line width
+                    # Draw diagonal lines to form an X
+                    canv.line(-cross_size, -cross_size, cross_size, cross_size)  # Top-left to bottom-right
+                    canv.line(-cross_size, cross_size, cross_size, -cross_size)  # Bottom-left to top-right
+                    cross_count += 1
+                
                 canv.restoreState()
+        
+        print(f"Drew {exact_count} rectangles (exact) and {cross_count} crosses (estimated)")
+        
+        # Print cross size summary if we have crosses
+        if hasattr(self, 'cross_sizes') and self.cross_sizes:
+            min_cross = min(self.cross_sizes)
+            max_cross = max(self.cross_sizes)
+            avg_cross = sum(self.cross_sizes) / len(self.cross_sizes)
+            print(f"Cross sizes: min={min_cross:.2f}mm, max={max_cross:.2f}mm, avg={avg_cross:.2f}mm")
     
     def gen_table(self, layer, index, n_comps, canv):
         parts = self.split_parts(layer, index, n_comps)
@@ -257,7 +439,9 @@ class PickAndPlaceFile:
             color_y = row_y - (row_height * 0.8)
             color_size = 4 * mm
             
-            canv.setFillColor(self.col_map[n])
+            # Use modulo to wrap around when there are more component groups than colors
+            color_index = n % len(self.col_map)
+            canv.setFillColor(self.col_map[color_index])
             canv.setLineWidth(0.5)
             canv.rect(color_x, color_y, color_size, color_size, 1, 1)
             
@@ -274,13 +458,15 @@ class PickAndPlaceFile:
             canv.drawString(table_x + columns[3][0] + 2 * mm, text_y, dsgn[0:35])
 
 class PickAndPlaceFileKicad(PickAndPlaceFile):
-    def __init__(self, fname):
+    def __init__(self, fname, report_parser=None):
         print("Loading pick and place file:", fname)
         
+        self.report_parser = report_parser  # Store reference to report parser
+        
         self.col_map = [colors.Color(1,0,0), 
-                       colors.Color(1,1,0), 
+                       colors.Color(1,0.5,0), 
                        colors.Color(0,1,0), 
-                       colors.Color(0,1,1), 
+                       colors.Color(0.6,0.3,0.1), 
                        colors.Color(1,0,1), 
                        colors.Color(0,0,1)]
 
@@ -324,20 +510,31 @@ class PickAndPlaceFileKicad(PickAndPlaceFile):
                         rotation = 0.0
 
                 # Parse component dimensions from package name if available
+                exact_dimensions = False  # Track if dimensions are exact
                 if len(row) > 2:  # Check if Package column exists
                     try:
                         package_col_idx = header.index("Package")
                         package_name = row[package_col_idx]
-                        w_mm, h_mm = parse_component_dimensions(package_name)
+                        
+                        # Try to get dimensions from report parser first
+                        if self.report_parser:
+                            (w_mm, h_mm), exact_dimensions = self.report_parser.get_component_dimensions(row[i_dsg])
+                        else:
+                            # Fallback to name-based parsing
+                            w_mm, h_mm = parse_component_dimensions(package_name)
+                            exact_dimensions = False  # Name-based parsing is estimated
+                        
                         w = w_mm * mm
                         h = h_mm * mm
                     except (ValueError, IndexError):
                         # Fallback to default size if Package column missing or parsing fails
                         w = 1 * mm
                         h = 1 * mm
+                        exact_dimensions = False
                 else:
                     w = 1 * mm
                     h = 1 * mm
+                    exact_dimensions = False
                     
                 l = row[i_layer]
                 if l == "F.Cu":
@@ -348,17 +545,19 @@ class PickAndPlaceFileKicad(PickAndPlaceFile):
                 ref = row[i_desc]
                 if ref not in self.layers[layer]:
                     self.layers[layer][ref] = []
-                self.layers[layer][ref].append(PPComponent(cx, cy, w, h, row[i_dsg], row[i_desc], ref, rotation))
+                self.layers[layer][ref].append(PPComponent(cx, cy, w, h, row[i_dsg], row[i_desc], ref, rotation, exact_dimensions))
 
 class PickAndPlaceFileSeparate(PickAndPlaceFile):
     """Handle separate .pos files for top and bottom layers"""
-    def __init__(self, base_name):
+    def __init__(self, base_name, report_parser=None):
         import os
         
+        self.report_parser = report_parser  # Store reference to report parser
+        
         self.col_map = [colors.Color(1,0,0), 
-                       colors.Color(1,1,0), 
+                       colors.Color(1,0.5,0), 
                        colors.Color(0,1,0), 
-                       colors.Color(0,1,1), 
+                       colors.Color(0.6,0.3,0.1), 
                        colors.Color(1,0,1), 
                        colors.Color(0,0,1)]
 
@@ -428,14 +627,21 @@ class PickAndPlaceFileSeparate(PickAndPlaceFile):
                     cx = pos_x * mm
                     cy = pos_y * mm
                     
-                    # Parse component dimensions from package name
-                    w_mm, h_mm = parse_component_dimensions(package)
+                    # Parse component dimensions - try report parser first
+                    exact_dimensions = False  # Track if dimensions are exact
+                    if self.report_parser:
+                        (w_mm, h_mm), exact_dimensions = self.report_parser.get_component_dimensions(ref)
+                    else:
+                        # Fallback to name-based parsing
+                        w_mm, h_mm = parse_component_dimensions(package)
+                        exact_dimensions = False  # Name-based parsing is estimated
+                    
                     w = w_mm * mm
                     h = h_mm * mm
                     
                     if val not in self.layers[layer]:
                         self.layers[layer][val] = []
-                    self.layers[layer][val].append(PPComponent(cx, cy, w, h, ref, val, val, rotation))
+                    self.layers[layer][val].append(PPComponent(cx, cy, w, h, ref, val, val, rotation, exact_dimensions))
                     
             except (ValueError, IndexError) as e:
                 print(f"Warning: Could not parse line in {filename}: {line}")
@@ -691,15 +897,49 @@ def producePrintoutsForLayer(base_name, layer, canv, pf=None, verbose=False):
 
     # Use provided pick and place data or load from CSV
     if pf is None:
-        pf = PickAndPlaceFileKicad(base_name + ".CSV")
+        pf = PickAndPlaceFileKicad(base_name + ".CSV", None)  # No report parser in this fallback case
     
     ngrp = pf.num_groups(layer)
     print(f"Found {ngrp} component groups in {layer} layer")
 
-    # Generate pages
+    # Generate pages with new layout:
+    # Page 1: Table with ALL components
+    # Page 2: Single drawing with ALL components
+    # Page 3+: Current paginated approach (6 components per page)
+    
+    if ngrp > 0:
+        # Page 1: Complete component table
+        print(f"Processing page 1: Complete component table ({ngrp} component groups)")
+        pf.gen_table(layer, 0, ngrp, canv)
+        canv.showPage()
+        
+        # Page 2: Complete assembly drawing with all components
+        print(f"Processing page 2: Complete assembly drawing with all components")
+        
+        # Save canvas state and apply transformations
+        canv.saveState()
+        canv.translate(gerberOffset[0], gerberOffset[1])
+        
+        if layer == "Bottom":
+            # For bottom layer, might need to mirror
+            canv.scale(gerberScale[0], gerberScale[1])
+        else:
+            canv.scale(gerberScale[0], gerberScale[1])
+
+        # Render Gerber background
+        renderGerber(base_name, layer, canv, verbose=verbose)
+        
+        # Draw ALL components
+        pf.draw(layer, 0, ngrp, canv)
+
+        # Restore canvas state
+        canv.restoreState()
+        canv.showPage()
+    
+    # Pages 3+: Traditional 6-components-per-page approach
     for page in range(0, (ngrp + 5) // 6):
         n_comps = min(6, ngrp - page * 6)
-        print(f"Processing page {page + 1} with {n_comps} component groups")
+        print(f"Processing page {page + 3} with {n_comps} component groups")
 
         # Save canvas state and apply transformations
         canv.saveState()
@@ -754,9 +994,20 @@ def main():
         sys.exit(1)
     
     # Create the appropriate pick-and-place loader
+    
+    # Try to load KiCad report file for accurate component dimensions
+    report_parser = None
+    report_file = base_name + ".rpt"
+    if os.path.exists(report_file):
+        print(f"Found KiCad report file: {report_file}")
+        report_parser = KiCadReportParser()
+        report_parser.parse_report_file(report_file)
+    else:
+        print(f"No report file found ({report_file}), using fallback dimension parsing")
+    
     if use_separate_pos:
         print("Using separate .pos files")
-        pf = PickAndPlaceFileSeparate(base_name)
+        pf = PickAndPlaceFileSeparate(base_name, report_parser)
     else:
         print("Using combined CSV file")
         # Try to find the CSV file
@@ -768,7 +1019,7 @@ def main():
                 break
         
         if csv_file:
-            pf = PickAndPlaceFileKicad(csv_file) 
+            pf = PickAndPlaceFileKicad(csv_file, report_parser) 
         else:
             print("Error: No CSV file found, but separate .pos files were not detected")
             sys.exit(1)
