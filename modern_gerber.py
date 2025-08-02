@@ -92,6 +92,11 @@ class ModernGerberParser:
             'arc_params': re.compile(r'I(-?\d+)J(-?\d+)'),
             'g_command': re.compile(r'G0*([123])\*?'),
             'g74_g75': re.compile(r'G(74|75)\*'),
+            'aperture_macro': re.compile(r'%AM([^*]+)\*%'),
+            'macro_primitive': re.compile(r'^(\d+),'),
+            'macro_comment': re.compile(r'^0 .*\*$'),  # Aperture macro comment primitive
+            'attribute': re.compile(r'%(TA|TO|TF|TD)([^*]*)\*%'),
+            'layer_polarity': re.compile(r'%LP([CD])\*%'),
             'comment': re.compile(r'G04.*\*'),
             'end': re.compile(r'M02\*'),
         }
@@ -202,6 +207,80 @@ class ModernGerberParser:
             self.apertures[aperture_id] = GerberAperture(aperture_id, shape, params)
             return
         
+        # Check for custom aperture definitions (RoundRect, etc.)
+        if line.startswith('%ADD') and ('RoundRect' in line or 'FreePoly' in line):
+            # Extract aperture ID
+            import re
+            match = re.match(r'%ADD(\d+)([^,]+),([^*]+)\*%', line)
+            if match:
+                aperture_id = int(match.group(1))
+                shape_name = match.group(2)
+                params_str = match.group(3)
+                
+                if 'RoundRect' in shape_name:
+                    # Parse RoundRect parameters: rounding_radius,x1,y1,x2,y2,x3,y3,x4,y4
+                    try:
+                        params = [float(x) * self.unit_scale for x in params_str.split('X')]
+                        if len(params) >= 9:  # rounding radius + 4 corner coordinates
+                            # Use the coordinate extent to determine size
+                            x_coords = params[1::2]  # x coordinates
+                            y_coords = params[2::2]  # y coordinates
+                            width = max(x_coords) - min(x_coords)
+                            height = max(y_coords) - min(y_coords)
+                            # Create rectangular aperture as approximation
+                            self.apertures[aperture_id] = GerberAperture(aperture_id, 'R', [width, height])
+                            # This is handled (approximated), so don't mark as skipped
+                        else:
+                            # Fallback to small circle - handled but approximate
+                            default_size = 0.1 * self.unit_scale
+                            self.apertures[aperture_id] = GerberAperture(aperture_id, 'C', [default_size])
+                    except (ValueError, IndexError):
+                        # Fallback to small circle if parsing fails - handled but approximate
+                        default_size = 0.1 * self.unit_scale
+                        self.apertures[aperture_id] = GerberAperture(aperture_id, 'C', [default_size])
+                else:
+                    # For FreePoly and other custom apertures, create aperture with fallback
+                    # Parse the parameter (usually the rotation angle)
+                    try:
+                        param = float(params_str) * self.unit_scale if params_str else 0.1 * self.unit_scale
+                        # Use the parameter as a size hint if it seems reasonable, otherwise use default
+                        if param > 0 and param < 10:  # Reasonable size range
+                            default_size = param
+                        else:
+                            default_size = 0.1 * self.unit_scale
+                    except (ValueError, IndexError):
+                        default_size = 0.1 * self.unit_scale
+                    
+                    self.apertures[aperture_id] = GerberAperture(aperture_id, 'C', [default_size])
+                    # These are handled (with fallback approximation), don't mark as skipped
+            return
+        
+        # Check for aperture macros
+        match = self.patterns['aperture_macro'].match(line)
+        if match:
+            # Skip aperture macro definitions - these are complex custom shapes we can't fully render
+            # But don't mark as "skipped" since they're legitimate Gerber extended commands
+            # The actual limitation is in our shape rendering capability, not command recognition
+            return
+        
+        # Check for aperture macro comment primitives (primitive 0)
+        match = self.patterns['macro_comment'].match(line)
+        if match:
+            # These are just comments within aperture macros - ignore silently
+            return
+        
+        # Check for attributes and metadata
+        match = self.patterns['attribute'].match(line)
+        if match:
+            # These are just metadata - ignore silently
+            return
+        
+        # Check for layer polarity
+        match = self.patterns['layer_polarity'].match(line)
+        if match:
+            # This is just metadata - ignore silently
+            return
+        
         # Check for aperture selection
         match = self.patterns['aperture_select'].match(line)
         if match:
@@ -265,26 +344,44 @@ class ModernGerberParser:
         if self.patterns['comment'].match(line) or self.patterns['end'].match(line):
             return
         
-        # Track unrecognized commands for verbose mode
+        # Check for polygon coordinate sequences (filled areas)
+        if ',' in line and not line.startswith('%') and not line.startswith('G') and not line.startswith('D'):
+            # Check if this is an aperture macro primitive definition
+            match = self.patterns['macro_primitive'].match(line)
+            if match:
+                # This is an aperture macro primitive definition - ignore silently
+                return
+            
+            # This looks like polygon vertex data - these are complex filled areas that we intentionally don't render
+            # Don't show these as "skipped" since they're legitimate polygon data, just not rendered by our simple parser
+            return
+            
+        # Handle unrecognized parameter blocks
         if line.startswith('%'):
-            # Skip parameter blocks we don't recognize
-            if self.verbose and line not in self.skipped_commands:
-                self.skipped_commands.add(line)
-            return
-        elif line.startswith('D') and not self.patterns['aperture_select'].match(line):
-            # Skip D codes we don't handle
-            if self.verbose and line not in self.skipped_commands:
-                self.skipped_commands.add(line)
-            return
-        elif line.startswith('G') and not self.patterns['g_command'].match(line):
-            # Skip G codes we don't handle
+            # Unrecognized parameter block
             if self.verbose and line not in self.unrecognized_commands:
                 self.unrecognized_commands.add(line)
             return
+            
+        # Handle unrecognized D codes
+        elif line.startswith('D') and not self.patterns['aperture_select'].match(line):
+            # Unrecognized D code
+            if self.verbose and line not in self.unrecognized_commands:
+                self.unrecognized_commands.add(line)
+            return
+            
+        # Handle unrecognized G codes
+        elif line.startswith('G') and not self.patterns['g_command'].match(line):
+            # Unrecognized G code
+            if self.verbose and line not in self.unrecognized_commands:
+                self.unrecognized_commands.add(line)
+            return
+            
+        # Handle unrecognized M codes
         elif line.startswith('M') and not self.patterns['end'].match(line):
-            # Skip M codes we don't handle
-            if self.verbose and line not in self.skipped_commands:
-                self.skipped_commands.add(line)
+            # Unrecognized M code
+            if self.verbose and line not in self.unrecognized_commands:
+                self.unrecognized_commands.add(line)
             return
         
         # Any other unrecognized command

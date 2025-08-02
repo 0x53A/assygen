@@ -115,10 +115,10 @@ def main():
         if os.path.exists(pos_top) or os.path.exists(pos_bottom):
             use_separate_pos_files = True
             print(f"Found separate position files:")
-            if os.path.exists(pos_top):
-                print(f"  ✓ {os.path.basename(pos_top)}")
-            if os.path.exists(pos_bottom):
-                print(f"  ✓ {os.path.basename(pos_bottom)}")
+            if pos_top:
+                print(f"  + {os.path.basename(pos_top)}")
+            if pos_bottom:
+                print(f"  + {os.path.basename(pos_bottom)}")
         else:
             print("Error: No pick-and-place files found!")
             print("Tried looking for:")
@@ -158,7 +158,7 @@ def main():
     if found_gerber:
         print("Found Gerber files:")
         for file_path, description in found_gerber:
-            print(f"  ✓ {os.path.basename(file_path)} ({description})")
+            print(f"  + {os.path.basename(file_path)} ({description})")
     
     if missing_gerber:
         print("Missing Gerber files:")
