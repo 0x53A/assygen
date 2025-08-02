@@ -57,8 +57,9 @@ class KiCadReportParser:
             'bbox': (0, 0)  # width, height in mm
         }
         
-        for line in lines:
-            line = line.strip()
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
             
             # Parse footprint name
             if line.startswith('footprint '):
@@ -81,29 +82,58 @@ class KiCadReportParser:
             elif line.startswith('layer '):
                 component_data['layer'] = line[6:].strip()
             
-            # Parse pad information  
-            elif line.startswith('position ') and 'size' in line:
-                # This is a pad position line with size info (not the component position which has 'orientation')
-                # Format: position -0.775000  0.000000  size  0.900000  0.950000  orientation 0.00
-                parts = line.split()
-                try:
-                    # parts[0] = 'position', parts[1] = x, parts[2] = y, parts[3] = 'size', parts[4] = w, parts[5] = h
-                    pad_x = float(parts[1])
-                    pad_y = float(parts[2])
-                    size_idx = parts.index('size')
-                    pad_w = float(parts[size_idx + 1])
-                    pad_h = float(parts[size_idx + 2])
+            # Parse pad sections
+            elif line.startswith('$PAD'):
+                # Found start of pad section, parse until $EndPAD
+                pad_data = {'position': (0, 0), 'size': (0, 0), 'rotation': 0.0}
+                i += 1  # Move to next line
+                
+                while i < len(lines):
+                    pad_line = lines[i].strip()
+                    if pad_line.startswith('$EndPAD'):
+                        # End of pad section, add the pad data
+                        component_data['pads'].append(pad_data)
+                        break
+                    elif pad_line.startswith('position '):
+                        # Parse pad position and size
+                        # Format: position -2.050000  0.000000  size  1.800000  2.800000  orientation 90.00
+                        parts = pad_line.split()
+                        try:
+                            pad_x = float(parts[1])
+                            pad_y = float(parts[2])
+                            pad_data['position'] = (pad_x, pad_y)
+                            
+                            # Look for size in the same line
+                            if 'size' in parts:
+                                size_idx = parts.index('size')
+                                if size_idx + 2 < len(parts):
+                                    pad_w = float(parts[size_idx + 1])
+                                    pad_h = float(parts[size_idx + 2])
+                                    pad_data['size'] = (pad_w, pad_h)
+                            
+                            # Look for orientation in the same line
+                            if 'orientation' in parts:
+                                orientation_idx = parts.index('orientation')
+                                if orientation_idx + 1 < len(parts):
+                                    pad_rotation = float(parts[orientation_idx + 1])
+                                    pad_data['rotation'] = pad_rotation
+                        except (IndexError, ValueError) as e:
+                            pass
                     
-                    component_data['pads'].append({
-                        'position': (pad_x, pad_y),
-                        'size': (pad_w, pad_h)
-                    })
-                except (IndexError, ValueError) as e:
-                    pass
+                    i += 1
+                
+            i += 1
         
         # Calculate component bounding box from pads
         if component_data['pads']:
-            component_data['bbox'] = self._calculate_bbox(component_data['pads'])
+            bbox_w, bbox_h = self._calculate_bbox(component_data['pads'])
+            
+            # For certain rotations, we might need to consider orientation
+            # The bbox calculation gives us dimensions in component coordinates
+            # But we need to see how the component actually appears in world coordinates
+            component_data['bbox'] = (bbox_w, bbox_h)
+        else:
+            component_data['bbox'] = (2.0, 1.0)  # Default
         
         return component_data
     
@@ -112,44 +142,85 @@ class KiCadReportParser:
         if not pads:
             return (2.0, 1.0)  # Default size
         
-        min_x = min_y = float('inf')
-        max_x = max_y = float('-inf')
-        
-        for pad in pads:
-            pad_x, pad_y = pad['position']
-            pad_w, pad_h = pad['size']
-            
-            # Calculate pad extents
-            left = pad_x - pad_w / 2
-            right = pad_x + pad_w / 2
-            bottom = pad_y - pad_h / 2
-            top = pad_y + pad_h / 2
-            
-            min_x = min(min_x, left)
-            max_x = max(max_x, right)
-            min_y = min(min_y, bottom)
-            max_y = max(max_y, top)
-        
-        pad_width = max_x - min_x
-        pad_height = max_y - min_y
-        
-        # Estimate component body size from pad layout
-        # For 2-pad components (resistors, capacitors), body is typically larger than pad span
+        # For 2-pad components, try to extract actual component size from footprint name first
         if len(pads) == 2:
-            # Component body is typically 1.2-1.5x the pad span for standard SMD components
-            body_width = max(pad_width * 1.3, pad_width + 0.4)  # At least 0.4mm larger than pads
-            body_height = max(pad_height * 1.5, pad_height + 0.6)  # At least 0.6mm larger than pads
+            # The component_data should have the footprint name, but we don't have access here
+            # So we'll use a more conservative estimation based on pad spacing
+            min_x = min_y = float('inf')
+            max_x = max_y = float('-inf')
+            
+            for pad in pads:
+                pad_x, pad_y = pad['position']
+                pad_w, pad_h = pad['size']
+                
+                # Calculate pad extents
+                left = pad_x - pad_w / 2
+                right = pad_x + pad_w / 2
+                bottom = pad_y - pad_h / 2
+                top = pad_y + pad_h / 2
+                
+                min_x = min(min_x, left)
+                max_x = max(max_x, right)
+                min_y = min(min_y, bottom)
+                max_y = max(max_y, top)
+            
+            pad_width = max_x - min_x
+            pad_height = max_y - min_y
+            
+            # For 2-pad components, use more realistic component body estimation
+            # The component body should be slightly smaller than the pad span in the long direction
+            # and slightly larger than pad size in the short direction
+            if pad_width > pad_height:
+                # Horizontal component (like normal 0603)
+                body_width = pad_width * 0.65  # Component is ~65% of pad span
+                body_height = max(pad_height * 0.85, pad_height * 0.85)  # Component is ~85% of pad height
+            else:
+                # Vertical component or square pads
+                body_width = max(pad_width * 0.85, pad_width * 0.85)
+                body_height = pad_height * 0.65
+                
         else:
-            # Multi-pad components: use pad envelope with reasonable margin
-            body_width = pad_width + 0.5   # 0.5mm margin beyond pads
-            body_height = pad_height + 0.5  # 0.5mm margin beyond pads
+            # Multi-pad components: use pad envelope with small margin
+            min_x = min_y = float('inf')
+            max_x = max_y = float('-inf')
+            
+            for pad in pads:
+                pad_x, pad_y = pad['position']
+                pad_w, pad_h = pad['size']
+                
+                # Calculate pad extents
+                left = pad_x - pad_w / 2
+                right = pad_x + pad_w / 2
+                bottom = pad_y - pad_h / 2
+                top = pad_y + pad_h / 2
+                
+                min_x = min(min_x, left)
+                max_x = max(max_x, right)
+                min_y = min(min_y, bottom)
+                max_y = max(max_y, top)
+            
+            pad_width = max_x - min_x
+            pad_height = max_y - min_y
+            body_width = pad_width + 0.3   # Small margin beyond pads
+            body_height = pad_height + 0.3  # Small margin beyond pads
         
         return (body_width, body_height)
     
     def get_component_dimensions(self, ref):
         """Get component dimensions for a reference designator"""
         if ref in self.components:
-            bbox = self.components[ref]['bbox']
+            component_data = self.components[ref]
+            footprint = component_data.get('footprint', '')
+            
+            # Try to parse actual dimensions from footprint name first
+            if footprint:
+                # Extract package size from footprint name (more reliable than pad calculation)
+                footprint_dims = parse_component_dimensions(footprint)
+                if footprint_dims != (2.0, 1.0):  # If not default fallback
+                    return footprint_dims, True
+            
+            # Fall back to pad-based calculation
+            bbox = component_data['bbox']
             return bbox, True  # Return dimensions and exact=True
         else:
             # Fallback to default size if not found in report
@@ -189,9 +260,9 @@ def parse_component_dimensions(package_name):
             # First two digits = length in 0.1mm, last two digits = width in 0.1mm  
             length_mm = int(metric_code[:2]) / 10.0
             width_mm = int(metric_code[2:]) / 10.0
-            # Return width first, then length (W x L instead of L x W)
-            # This matches the typical component orientation in pick-and-place
-            return (width_mm, length_mm)
+            # Return length first, then width (L x W)
+            # Length is the longer dimension for natural component orientation
+            return (length_mm, width_mm)
         
         # Handle standard imperial sizes with metric conversion
         # Examples: 0603, 0805, 1206, etc.
@@ -332,10 +403,94 @@ class PickAndPlaceFile:
             fill_color = self.col_map[color_index]
             
             canv.setStrokeColorRGB(stroke_color.red, stroke_color.green, stroke_color.blue, alpha=0.8)
-            canv.setFillColorRGB(fill_color.red, fill_color.green, fill_color.blue, alpha=0.6)
+            canv.setFillColorRGB(fill_color.red, fill_color.green, fill_color.blue, alpha=0.6)  # Semi-transparent for bounding box
             n = n + 1
             for j in i:
-                # Draw rotated component
+                # Check if we have pad information from KiCad report
+                if hasattr(self, 'report_parser') and self.report_parser and j.name in self.report_parser.components:
+                    # Debug for C3
+                    if verbose and (j.name == 'C3' or 'C3' in str(j.name)):
+                        print(f"Found component {j.name} in report parser")
+                    
+                    # Draw individual pads for this component
+                    component_data = self.report_parser.components[j.name]
+                    pads = component_data.get('pads', [])
+                    
+                    # Debug pad count
+                    if verbose and j.name == 'C3':
+                        print(f"C3 has {len(pads)} pads in component_data")
+                    
+                    if pads:
+                        canv.saveState()
+                        canv.translate(j.xc, j.yc)  # Move to component center
+                        
+                        # Apply component rotation (no 90° correction here since we handle it in pad coordinates)
+                        canv.rotate(j.rotation)
+                        
+                        # Debug output for various components
+                        if verbose and j.name in ['C1', 'C2', 'C3', 'C4', 'R1', 'IC1', 'U1']:
+                            print(f"Drawing {j.name} with {len(pads)} pads at ({j.xc/mm:.2f}, {j.yc/mm:.2f})mm, rotation {j.rotation}°:")
+                            print(f"  Component dimensions: {j.w/mm:.2f} x {j.h/mm:.2f} mm")
+                            for i, pad in enumerate(pads[:2]):  # Only show first 2 pads
+                                print(f"  Pad {i+1}: pos={pad['position']}, size={pad['size']}, rot={pad.get('rotation', 0.0)}")
+                        
+                        # Draw each pad as a semi-transparent filled rectangle (no stroke)
+                        for pad in pads:
+                            pad_x, pad_y = pad['position']
+                            pad_w, pad_h = pad['size']
+                            pad_rotation = pad.get('rotation', 0.0)
+                            
+                            # Convert pad positions and sizes to mm units
+                            pad_x_mm = pad_x * mm
+                            pad_y_mm = pad_y * mm  
+                            pad_w_mm = pad_w * mm
+                            pad_h_mm = pad_h * mm
+                            
+                            # Set pad fill color (60% opacity, no stroke)
+                            canv.setFillColorRGB(fill_color.red, fill_color.green, fill_color.blue, alpha=0.6)
+                            canv.setLineWidth(0)  # No stroke
+                            
+                            # Apply pad rotation if needed
+                            if pad_rotation != 0.0:
+                                canv.saveState()
+                                canv.translate(pad_x_mm, pad_y_mm)
+                                canv.rotate(pad_rotation)
+                                # For rotated pads, draw at origin with rotated dimensions (filled only)
+                                canv.rect(-pad_w_mm/2, -pad_h_mm/2, pad_w_mm, pad_h_mm, fill=1, stroke=0)
+                                canv.restoreState()
+                            else:
+                                # Draw pad rectangle (filled only) at pad position
+                                canv.rect(pad_x_mm - pad_w_mm/2, pad_y_mm - pad_h_mm/2, pad_w_mm, pad_h_mm, fill=1, stroke=0)
+                        
+                        # Instead of drawing a potentially incorrect outline, draw an X to show component center
+                        # This avoids orientation issues while still showing where the component goes
+                        canv.setStrokeColorRGB(stroke_color.red, stroke_color.green, stroke_color.blue, alpha=0.8)
+                        canv.setLineWidth(0.5)  # Thin line
+                        
+                        # Use smaller crosses than the fallback case - divide by 8 instead of 4 for more subtle markers
+                        cross_size = max(j.w, j.h) / 8  # Eighth of the larger dimension (smaller than fallback)
+                        cross_size = max(0.5 * mm, min(2.0 * mm, cross_size))  # Apply sanity check: min 0.5mm, max 2mm
+                        
+                        # Draw X at component center
+                        canv.line(-cross_size, -cross_size, cross_size, cross_size)  # Top-left to bottom-right
+                        canv.line(-cross_size, cross_size, cross_size, -cross_size)  # Bottom-left to top-right
+                        
+                        if verbose and j.name in ['C1', 'C2', 'C3', 'C4', 'R1', 'IC1', 'U1']:
+                            print(f"  Drawing X marker (cross_size: {cross_size/mm:.2f}mm)")
+                        
+                        canv.restoreState()
+                        exact_count += 1
+                        continue
+                
+                else:
+                    # Debug missing components
+                    if verbose and (j.name == 'C3' or 'C3' in str(j.name)):
+                        print(f"Component {j.name} NOT found in report parser")
+                        if hasattr(self, 'report_parser') and self.report_parser:
+                            available_keys = list(self.report_parser.components.keys())[:10]  # First 10 keys
+                            print(f"Available keys in report: {available_keys}")
+                
+                # Fallback: Draw component body (existing logic)
                 canv.saveState()
                 canv.translate(j.xc, j.yc)  # Move to component center
                 canv.rotate(j.rotation - 90)  # Apply rotation with 90° correction
@@ -1078,38 +1233,43 @@ def producePrintoutsForLayer(base_name, layer, canv, pf=None, verbose=False):
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: assygen <base_name>")
-        print("Example: assygen freewatch")
+        print("Usage: assygen [--verbose] <base_name>")
+        print("Examples:")
+        print("  assygen freewatch")
+        print("  assygen --verbose project_name")
+        print("  assygen path/to/files/project")
         sys.exit(1)
     
-    # Get base_name, ignoring any flags
+    # Parse arguments
     base_name = None
-    use_separate_pos = False
     verbose = False
     
-    # First pass: look for flags
+    # Parse flags and get base_name
     for arg in sys.argv[1:]:
-        if arg == "--separate-pos":
-            use_separate_pos = True
-        elif arg == "--verbose":
+        if arg == "--verbose" or arg == "-v":
             verbose = True
-    
-    # Second pass: get base_name (first non-flag argument)
-    for arg in sys.argv[1:]:
-        if not arg.startswith('--'):
-            base_name = arg
-            break
+        elif not arg.startswith('-'):
+            if base_name is None:
+                base_name = arg
+            else:
+                print("Error: Multiple base names provided")
+                print("Usage: assygen [--verbose] <base_name>")
+                sys.exit(1)
     
     if not base_name:
-        print("Usage: assygen <base_name>")
-        print("Example: assygen freewatch")
+        print("Error: No base name provided")
+        print("Usage: assygen [--verbose] <base_name>")
         sys.exit(1)
-    
-    # Create the appropriate pick-and-place loader
     
     # Try to load KiCad report file for accurate component dimensions
     report_parser = None
-    report_file = base_name + ".rpt"
+    # Extract base name without file extension for report file lookup
+    if base_name.endswith('.CSV') or base_name.endswith('.csv'):
+        report_base = base_name[:-4]  # Remove .CSV/.csv extension
+    else:
+        report_base = base_name
+    
+    report_file = report_base + ".rpt"
     if os.path.exists(report_file):
         if verbose:
             print(f"Found KiCad report file: {report_file}")
@@ -1119,31 +1279,48 @@ def main():
         if verbose:
             print(f"No report file found ({report_file}), using fallback dimension parsing")
     
-    if use_separate_pos:
-        if verbose:
-            print("Using separate .pos files")
-        pf = PickAndPlaceFileSeparate(base_name, report_parser, verbose)
+    # Auto-detect file format: try CSV first, then separate .pos files
+    csv_file = None
+    use_separate_pos = False
+    
+    # Try to find CSV file
+    if base_name.endswith('.CSV') or base_name.endswith('.csv'):
+        # base_name already includes the CSV file
+        if os.path.exists(base_name):
+            csv_file = base_name
     else:
-        if verbose:
-            print("Using combined CSV file")
-        # Try to find the CSV file
-        csv_file = None
+        # base_name is just the base, try adding extensions
         csv_candidates = [base_name + ".CSV", base_name + ".csv"]
         for candidate in csv_candidates:
             if os.path.exists(candidate):
                 csv_file = candidate
                 break
+    
+    if csv_file:
+        if verbose:
+            print(f"Using combined CSV file: {csv_file}")
+        pf = PickAndPlaceFileKicad(csv_file, report_parser, verbose)
+    else:
+        # No CSV found, try separate .pos files
+        top_pos_file = report_base + "-top.pos"
+        bottom_pos_file = report_base + "-bottom.pos"
         
-        if csv_file:
-            pf = PickAndPlaceFileKicad(csv_file, report_parser, verbose) 
+        if os.path.exists(top_pos_file) or os.path.exists(bottom_pos_file):
+            if verbose:
+                print("Using separate .pos files")
+            pf = PickAndPlaceFileSeparate(report_base, report_parser, verbose)
+            use_separate_pos = True
         else:
-            print("Error: No CSV file found, but separate .pos files were not detected")
+            print(f"Error: No pick-and-place files found for '{base_name}'")
+            print("Expected either:")
+            print(f"  - Combined CSV: {base_name}.CSV or {base_name}.csv")
+            print(f"  - Separate .pos files: {report_base}-top.pos and/or {report_base}-bottom.pos")
             sys.exit(1)
     
     # Determine optimal page orientation based on PCB dimensions
     if verbose:
         print("\nAnalyzing PCB dimensions for optimal orientation...")
-    pcb_extents = get_pcb_extents(base_name, verbose=verbose)
+    pcb_extents = get_pcb_extents(report_base, verbose=verbose)
     optimal_pagesize = determine_optimal_orientation(pcb_extents, verbose)
     
     # Update global gerberPageSize for consistent use throughout
@@ -1151,26 +1328,26 @@ def main():
     gerberPageSize = optimal_pagesize
     
     # Create PDF with full features
-    canv = canvas.Canvas(base_name + "_assy.pdf", pagesize=gerberPageSize)
+    canv = canvas.Canvas(report_base + "_assy.pdf", pagesize=gerberPageSize)
     
     try:
         # Process both top and bottom layers
-        producePrintoutsForLayer(base_name, "Top", canv, pf, verbose=verbose) 
-        producePrintoutsForLayer(base_name, "Bottom", canv, pf, verbose=verbose)
+        producePrintoutsForLayer(report_base, "Top", canv, pf, verbose=verbose) 
+        producePrintoutsForLayer(report_base, "Bottom", canv, pf, verbose=verbose)
         canv.save()
         
-        print(f"\nGenerated {base_name}_assy.pdf with Gerber backgrounds!")
+        print(f"\nGenerated {report_base}_assy.pdf with Gerber backgrounds!")
         print("Contains assembly drawings for both Top and Bottom layers")
         
     except FileNotFoundError as e:
         print(f"Error: Required file not found - {e}")
         print("Make sure you have the following files:")
         if use_separate_pos:
-            print(f"  - {base_name}-top.pos and/or {base_name}-bottom.pos (position files)")
+            print(f"  - {report_base}-top.pos and/or {report_base}-bottom.pos (position files)")
         else:
-            print(f"  - {base_name}.CSV (pick and place data)")
-        print(f"  - {base_name}.GTL/.GBL or {base_name}-F_Cu.gbr/-B_Cu.gbr (copper layers)")  
-        print(f"  - {base_name}.GTO/.GBO or {base_name}-F_Silkscreen.gbr/-B_Silkscreen.gbr (silkscreen layers)")
+            print(f"  - {report_base}.CSV (pick and place data)")
+        print(f"  - {report_base}.GTL/.GBL or {report_base}-F_Cu.gbr/-B_Cu.gbr (copper layers)")  
+        print(f"  - {report_base}.GTO/.GBO or {report_base}-F_Silkscreen.gbr/-B_Silkscreen.gbr (silkscreen layers)")
         sys.exit(1)
     except PermissionError as e:
         print(f"Error: Permission denied - {e}")
