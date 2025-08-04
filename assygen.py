@@ -789,10 +789,12 @@ class PickAndPlaceFileKicad(PickAndPlaceFile):
                 else:
                     layer = "Bottom"
                     
+                # Group by value AND package to distinguish components with same value but different footprints
                 ref = row[i_desc]
-                if ref not in self.layers[layer]:
-                    self.layers[layer][ref] = []
-                self.layers[layer][ref].append(PPComponent(cx, cy, w, h, row[i_dsg], row[i_desc], ref, rotation, exact_dimensions, package_name))
+                group_key = f"{ref}_{package_name}"  # Combine value and package for unique grouping
+                if group_key not in self.layers[layer]:
+                    self.layers[layer][group_key] = []
+                self.layers[layer][group_key].append(PPComponent(cx, cy, w, h, row[i_dsg], row[i_desc], ref, rotation, exact_dimensions, package_name))
 
 class PickAndPlaceFileSeparate(PickAndPlaceFile):
     """Handle separate .pos files for top and bottom layers"""
@@ -888,9 +890,11 @@ class PickAndPlaceFileSeparate(PickAndPlaceFile):
                     w = w_mm * mm
                     h = h_mm * mm
                     
-                    if val not in self.layers[layer]:
-                        self.layers[layer][val] = []
-                    self.layers[layer][val].append(PPComponent(cx, cy, w, h, ref, val, val, rotation, exact_dimensions, package))
+                    # Group by value AND package to distinguish components with same value but different footprints
+                    group_key = f"{val}_{package}"  # Combine value and package for unique grouping
+                    if group_key not in self.layers[layer]:
+                        self.layers[layer][group_key] = []
+                    self.layers[layer][group_key].append(PPComponent(cx, cy, w, h, ref, val, val, rotation, exact_dimensions, package))
                     
             except (ValueError, IndexError) as e:
                 print(f"Warning: Could not parse line in {filename}: {line}")
